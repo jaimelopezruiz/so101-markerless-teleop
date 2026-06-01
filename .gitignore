@@ -9,5 +9,6 @@ __pycache__/
 # Large model assets (download separately)
 *.task
 
-# IDE
+# IDE / tooling
 .vscode/
+.claude/
