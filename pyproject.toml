@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "so101-markerless-teleop"
+version = "0.1.0"
+description = "Markerless teleoperation of the SO-101 arm from monocular pose estimation."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "mediapipe",
+    "opencv-python",
+    "yourdfpy",
+]
+
+[tool.setuptools]
+packages = ["kinematics", "urdf", "perception", "tests"]

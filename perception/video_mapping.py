@@ -6,7 +6,7 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from perception.pose_detector import draw_landmarks_on_image
+from pose_detector import draw_landmarks_on_image
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "pose_landmarker_heavy.task"
 
@@ -22,13 +22,15 @@ detector = vision.PoseLandmarker.create_from_options(options)
 
 # Start capturing from webcam (0 usually the default camera)
 cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    raise RuntimeError("Could not open webcam (device 0). Is a camera connected and available?")
 
 start_time = time.time()  # Start measuring time for timestamps for MediaPipe
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
-        print("Ignoring empty camera frame.")
-        continue
+        cap.release()
+        raise RuntimeError("Failed to read frame from webcam; the camera may have been disconnected.")
 
     # OpenCV uses BGR, but MediaPipe expects RGB
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

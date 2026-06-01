@@ -44,6 +44,30 @@ flowchart LR
     F -- warm start --> F
 ```
 
+### Repo structure 
+modern_robotics/
+├── README.md            # new — layout, setup, how to run
+├── DEVLOG.md            # unchanged
+├── requirements.txt     # numpy, matplotlib, mediapipe, opencv-python, yourdfpy
+├── .gitignore           
+├── kinematics/
+│   ├── core.py          # trimmed from Northwestern's Modern Robotics lib — 18 functions (was 40+)
+│   └── ik.py            # IKinBodyDLS
+├── urdf/
+│   ├── parser.py        # findMnS + rpyToRot (no more module globals; path-safe)
+│   └── so101_new_calib.urdf
+├── perception/
+│   ├── pose_detector.py # draw_landmarks_on_image
+│   ├── image_mapping.py # still-image demo
+│   └── video_mapping.py # webcam demo
+├── models/
+│   └── pose_landmarker_heavy.task   # 30 MB, git-ignored
+└── tests/
+    ├── robot.py         # shared M, Slist, Blist, limits fixtures
+    ├── test_fk.py       # verify_fk + driver
+    ├── test_jacobian.py # verify_jac + driver
+    └── test_ik.py       # round_trip, verify_singular, noise_sweep + driver
+
 ### Scope and constraints (v1)
 
 - **2D first**: target end-effector position in the (x, y) plane of the robot base; z held constant
