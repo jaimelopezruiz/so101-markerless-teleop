@@ -1,26 +1,43 @@
 import xml.etree.ElementTree as ET
-import numpy as np
+from pathlib import Path
 from types import SimpleNamespace
 
-tree = ET.parse('so101_new_calib.urdf')
-root = tree.getroot()
+import numpy as np
+
+# Bundled SO-101 description, resolved relative to this file so the parser
+# works regardless of the current working directory.
+DEFAULT_URDF = Path(__file__).resolve().parent / "so101_new_calib.urdf"
+
 
 def rpyToRot(rpy):
-   r, p, y = rpy
-   Rx = np.array([[1, 0,        0       ],
+    """Converts fixed-axis roll-pitch-yaw angles to a rotation matrix (Rz @ Ry @ Rx)."""
+    r, p, y = rpy
+    Rx = np.array([[1, 0,         0        ],
                    [0, np.cos(r), -np.sin(r)],
                    [0, np.sin(r),  np.cos(r)]])
-   Ry = np.array([[ np.cos(p), 0, np.sin(p)],
+    Ry = np.array([[ np.cos(p), 0, np.sin(p)],
                    [ 0,         1, 0        ],
                    [-np.sin(p), 0, np.cos(p)]])
-   Rz = np.array([[np.cos(y), -np.sin(y), 0],
+    Rz = np.array([[np.cos(y), -np.sin(y), 0],
                    [np.sin(y),  np.cos(y), 0],
                    [0,          0,         1]])
-   return Rz @ Ry @ Rx
+    return Rz @ Ry @ Rx
 
-robot = SimpleNamespace()
 
-def findMnS():
+def findMnS(urdf_path=DEFAULT_URDF):
+    """Parses a URDF and extracts the kinematic model in PoE form.
+
+    Walks the joints in reverse URDF order (arm joints only, gripper skipped),
+    accumulating the home transform and building the space-frame screw axes.
+
+    :param urdf_path: Path to the URDF file
+    :return M: Home configuration of the end-effector (4x4)
+    :return Slist: Space-frame screw axes at home, as columns (6 x n)
+    :return limits: Joint limits, rows [lower, upper] (n x 2)
+    """
+    root = ET.parse(urdf_path).getroot()
+    robot = SimpleNamespace()
+
     T = np.eye(4)
     Slist = np.empty((6, 0))
     limits = []
@@ -29,14 +46,14 @@ def findMnS():
         axis = joint.find('axis')
         name = joint.get('name')
 
-        T_local = np.zeros((4,4))
+        T_local = np.zeros((4, 4))
         R_cumulative = np.zeros((3, 3))
 
         if origin is not None and name != 'gripper':
             setattr(robot, name, SimpleNamespace(
                 xyz=np.array([float(v) for v in origin.get('xyz').split()]),
                 rpy=np.array([float(v) for v in origin.get('rpy').split()]),
-                axis = np.array([float(v) for v in axis.get('xyz').split()])
+                axis=np.array([float(v) for v in axis.get('xyz').split()])
             ))
 
             ## FOR M:
@@ -46,7 +63,6 @@ def findMnS():
 
             T = T @ T_local
             R_cumulative = T[:3, :3]
-            
 
             ## FOR Slist and limits:
             if axis is not None and joint.get('type') != 'fixed' and name != 'gripper':

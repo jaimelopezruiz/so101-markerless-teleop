@@ -1,7 +1,6 @@
 import numpy as np
-from core import *
-from urdfpy import *
 
+from kinematics.core import FKinBody, JacobianBody, TransInv, MatrixLog6, se3ToVec
 
 
 def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=0.01, maxiters=200):
@@ -54,6 +53,3 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
         thetalist = np.clip(thetalist, joints_limits[:, 0], joints_limits[:, 1])
 
     return (thetalist, not err)
-
-M, Slist, limits = findMnS()
-thetalist = np.array([-np.pi / 8, 0, 0, 0, 0])   # Test theta

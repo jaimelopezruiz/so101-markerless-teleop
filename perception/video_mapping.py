@@ -1,17 +1,21 @@
-import cv2
+from pathlib import Path
 import time
+
+import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from core_pose_detector import *
+from perception.pose_detector import draw_landmarks_on_image
+
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "pose_landmarker_heavy.task"
 
 # Create PoseLandmarker object for VIDEO mode
-base_options = python.BaseOptions(model_asset_path='pose_landmarker_heavy.task')
+base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
 options = vision.PoseLandmarkerOptions(
-    base_options = base_options,
-    running_mode = vision.RunningMode.VIDEO,
-    output_segmentation_masks = True
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    output_segmentation_masks=True
 )
 
 detector = vision.PoseLandmarker.create_from_options(options)
@@ -19,16 +23,16 @@ detector = vision.PoseLandmarker.create_from_options(options)
 # Start capturing from webcam (0 usually the default camera)
 cap = cv2.VideoCapture(0)
 
-start_time = time.time() # Start measuring time for timestaps for MediaPipe
+start_time = time.time()  # Start measuring time for timestamps for MediaPipe
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
         print("Ignoring empty camera frame.")
         continue
 
-    # OpenCV uses BGR, but MediaPipe excpects RGB
+    # OpenCV uses BGR, but MediaPipe expects RGB
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format = mp.ImageFormat.SRGB, data = rgb_frame)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
     # Calculate the timestamp in milliseconds
     timestamp_ms = int((time.time() - start_time) * 1000)
@@ -43,7 +47,6 @@ while cap.isOpened():
     display_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
 
     cv2.imshow("Live Pose Detection", display_image)
-
 
     ## EXTRACTING PARAMETERS:
     # First check there are parameters to extract
