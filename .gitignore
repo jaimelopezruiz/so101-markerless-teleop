@@ -1,0 +1,13 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Large model assets (download separately)
+*.task
+
+# IDE
+.vscode/
