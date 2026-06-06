@@ -6,9 +6,12 @@ from kinematics.core import FKinBody, JacobianBody, TransInv, MatrixLog6, se3ToV
 def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=0.01, maxiters=200):
     """Computes inverse kinematics in the body frame for an open chain robot.
 
-    Uses damped least-squares (DLS) Newton-Raphson iteration. Joint limit
-    clamping is applied to the final result only — clamping inside the loop
-    corrupts the gradient and prevents convergence.
+    Uses damped least-squares (DLS) Newton-Raphson iteration. Joint limits are
+    re-clamped every iteration so each iterate stays inside the reachable joint
+    space. Empirically this widens the convergence basin substantially versus
+    clamping only the final result — at a noisy initial guess (~2 rad off) the
+    round-trip success rate is 83% with in-loop clamping vs 35% without (see
+    DEVLOG Entry 6 for the full sweep).
 
     :param Blist: Screw axes in the end-effector (body) frame at home, columns
     :param M: Home configuration of the end-effector (4x4)
