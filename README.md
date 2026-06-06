@@ -38,7 +38,11 @@ so101-markerless-teleop/
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
+pip install -e .                # makes kinematics/, urdf/, perception/, tests/ importable
 ```
+
+The editable install (`pip install -e .`) puts the project on the path, so the
+imports resolve no matter where a script is run from.
 
 The MediaPipe model (`models/pose_landmarker_heavy.task`) is not tracked in
 git; download `pose_landmarker_heavy.task` from MediaPipe and place it there.
