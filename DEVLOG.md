@@ -140,9 +140,7 @@ No unit test here; perception is verified **visually**, since the ground truth i
 - `image_mapping.py` on a still photo → annotated skeleton overlay is correct.
 - `video_mapping.py` live → landmarks track the arm in real time; shoulder/wrist indices are the expected joints.
 
-Both scripts save their annotated output into `docs/media/` (the images below appear once the scripts have been run):
-
-![Still-image pose detection](docs/media/pose_detection.png)
+Below is an example of the annotated output from the video mapping script: `docs/media/`.
 
 ![Live pose tracking](docs/media/live_tracking.gif)
 
