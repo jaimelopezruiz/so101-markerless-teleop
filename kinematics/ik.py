@@ -9,7 +9,7 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
     Uses damped least-squares (DLS) Newton-Raphson iteration. Joint limits are
     re-clamped every iteration so each iterate stays inside the reachable joint
     space. Empirically this widens the convergence basin substantially versus
-    clamping only the final result — at a noisy initial guess (~2 rad off) the
+    clamping only the final result: at a noisy initial guess (~2 rad off) the
     round-trip success rate is 83% with in-loop clamping vs 35% without (see
     DEVLOG Entry 6 for the full sweep).
 
@@ -20,9 +20,9 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
     :param joints_limits: Joint limits array (n, 2), columns [lower, upper]
     :param eomg: Angular error tolerance (rad)
     :param ev: Linear error tolerance (m)
-    :param lam: DLS damping factor — higher = more stable but slower
+    :param lam: DLS damping factor: higher = more stable but slower
     :param maxiters: Maximum Newton-Raphson iterations
-    :return: (thetalist, success) — clamped joint angles and convergence flag
+    :return: (thetalist, success): clamped joint angles and convergence flag
     """
     thetalist = np.array(thetalist0).copy()
     i = 0
@@ -40,7 +40,7 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
         J = JacobianBody(Blist, thetalist)
         delta_theta = J.T @ np.linalg.solve(J @ J.T + lam**2 * np.eye(6), Vb)  # DLS step
 
-        if not np.all(np.isfinite(delta_theta)):  # NaN/Inf guard — bail with last good theta
+        if not np.all(np.isfinite(delta_theta)):  # NaN/Inf guard: bail with last good theta
             return (thetalist_previous, False)
 
         thetalist = thetalist + delta_theta

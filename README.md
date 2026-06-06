@@ -1,4 +1,4 @@
-# Markerless teleoperation — SO-101
+# Markerless teleoperation: SO-101
 
 Drive a LeRobot SO-101 5-DOF arm from a single webcam: MediaPipe pose
 estimation → frame transforms → from-scratch inverse kinematics → joint
@@ -8,15 +8,16 @@ scope, and status.
 ## Layout
 
 ```
-modern_robotics/
+so101-markerless-teleop/
 ├── README.md
 ├── DEVLOG.md
+├── pyproject.toml
 ├── requirements.txt
 ├── kinematics/
 │   ├── core.py        # trimmed Modern Robotics library (PoE FK, Jacobians, SE(3) utils)
-│   └── ik.py          # IKinBodyDLS — damped least-squares inverse kinematics
+│   └── ik.py          # IKinBodyDLS, damped least-squares inverse kinematics
 ├── urdf/
-│   ├── parser.py      # findMnS — extracts M, Slist, joint limits from the URDF
+│   ├── parser.py      # findMnS, extracts M, Slist, joint limits from the URDF
 │   └── so101_new_calib.urdf
 ├── perception/
 │   ├── pose_detector.py   # MediaPipe landmark drawing/extraction helper
@@ -40,7 +41,7 @@ pip install -r requirements.txt
 ```
 
 The MediaPipe model (`models/pose_landmarker_heavy.task`) is not tracked in
-git — download `pose_landmarker_heavy.task` from MediaPipe and place it there.
+git; download `pose_landmarker_heavy.task` from MediaPipe and place it there.
 
 ## Running
 
