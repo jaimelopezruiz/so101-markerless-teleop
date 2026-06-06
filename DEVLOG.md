@@ -140,8 +140,17 @@ No unit test here; perception is verified **visually**, since the ground truth i
 - `image_mapping.py` on a still photo → annotated skeleton overlay is correct.
 - `video_mapping.py` live → landmarks track the arm in real time; shoulder/wrist indices are the expected joints.
 
-```
-<!-- TODO: insert screenshot / GIF of live tracking here -->
+Both scripts save their annotated output into `docs/media/` (the images below appear once the scripts have been run):
+
+![Still-image pose detection](docs/media/pose_detection.png)
+
+![Live pose tracking](docs/media/live_tracking.gif)
+
+Regenerate with:
+
+```sh
+python -m perception.image_mapping path/to/arm_photo.jpg   # saves docs/media/pose_detection.png
+python -m perception.video_mapping                         # press q to stop; saves docs/media/live_tracking.gif
 ```
 
 ### Decisions & open questions
@@ -303,7 +312,7 @@ Implemented in `kinematics/ik.py::IKinBodyDLS`. Iterate until both the angular (
 
 ### Verification
 **`tests/test_ik.py`**: three checks:
-- **`round_trip`**: *the core correctness test.* Sample a random valid θ, FK it to a target `T_sd`, perturb θ by noise to make the initial guess, run IK, and confirm the solution reproduces the target pose (within tolerance). Non-converged solves count as failures. Reported as a success rate.
+- **`round_trip`**: *core correctness test.* Sample a random valid θ, FK it to a target `T_sd`, perturb θ by noise to make the initial guess, run IK, and confirm the solution reproduces the target pose (within tolerance). Non-converged solves count as failures. Reported as a success rate.
 - **`verify_singular`**: steps DLS vs plain pseudoinverse near a near-singular config and plots the joint trajectories (prints the condition number; see caveat above).
 - **`noise_sweep`**: round-trip success rate across a range of initial-guess noise levels, the **convergence-radius** characterization (the in-loop-clamp table above is this sweep, run for both clamping modes).
 
