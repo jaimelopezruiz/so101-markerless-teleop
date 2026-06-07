@@ -11,9 +11,6 @@ M, Slist, limits = findMnS()
 # Body-frame screw axes: Blist = [Ad_{M^-1}] Slist, column by column.
 Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[1])]).T
 
-# Order matches how findMnS builds Slist (reversed URDF order, arm joints only)
-JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
-
 THETALIST_REST = np.array([0, -1.3, 0, 0, 0])
 
 # Determining "reach" of robot for calibration later
@@ -22,7 +19,7 @@ T = FKinBody(M, Blist, thetalist)
 reach_xyz = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - T[:3, 3]
 REACH = np.linalg.norm(reach_xyz[[0, 2]])    # Magnitude of vector difference between full reach and rest point
 
-class Bridge:
+class Robot:
 
     def __init__(self, M, Blist, limits, T_rest, theta_prev, alpha):
         self.M = M
