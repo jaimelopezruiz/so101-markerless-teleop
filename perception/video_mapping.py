@@ -13,12 +13,15 @@ ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = ROOT / "models" / "pose_landmarker_heavy.task"
 
 # --- DEVLOG capture: set True to record a short GIF of live tracking ---
-RECORD_GIF = True
+RECORD_GIF = False
 GIF_PATH = ROOT / "docs" / "media" / "live_tracking.gif"
 GIF_MAX_FRAMES = 120   # stop collecting after this many kept frames (~ a few seconds)
 GIF_STRIDE = 3         # keep every Nth frame to shrink the file
 GIF_WIDTH = 360        # downscale width (px) for a lighter GIF
 WINDOW = "Live Pose Detection"
+
+# ----- Testing and debugging purposes - True to get testing outputs
+TEST = True
 
 # Create PoseLandmarker object for VIDEO mode
 base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
@@ -90,6 +93,9 @@ try:
             break
         if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
             break
+        
+        if TEST: print(wrist)
+
 finally:
     # Always release the camera, close windows, and save whatever we collected,
     # even if the loop was interrupted (Ctrl+C, window closed, exception).
