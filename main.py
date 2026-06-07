@@ -21,11 +21,13 @@ REACH = np.linalg.norm(reach_xyz[[0, 2]])    # Magnitude of vector difference be
 
 class Robot:
 
-    def __init__(self, M, Blist, limits, T_rest, theta_prev, alpha):
+    def __init__(self, M, Blist, limits, theta_prev, alpha):
         self.M = M
         self.Blist = Blist
         self.limits = limits
-        self.T_rest = T_rest
+        T_rest_full = FKinBody(self.M, self.Blist, theta_prev)
+        self.T_rest = T_rest_full[:3, 3]
+        self.R_fixed = T_rest_full[:3, :3]
         self.theta_prev = theta_prev.copy()
         self.alpha = alpha
         self.scale = None
@@ -51,12 +53,12 @@ class Robot:
         # Computing raw relative vector, smoothing it and mapping to robot target position
         rel_vector = np.array([wrist.x - shoulder.x, wrist.y - shoulder.y])
         smooth_rel_vector= self._smooth(rel_vector)
-        robot_x = self.T_rest[0] + self.scale * smooth_rel_vector[0] 
+        robot_x = self.T_rest[0] + self.scale * smooth_rel_vector[0]
         robot_z = self.T_rest[2] - self.scale * smooth_rel_vector[1]
 
         # Forming 4x4 matrix for that position and (for now) fixed orientation
         T_sd = np.eye(4)
-        T_sd[:3, :3] = self.M[:3, :3]
+        T_sd[:3, :3] = self.R_fixed
         T_sd[:3, 3] = np.array([robot_x, self.T_rest[1], robot_z])
 
         # Calling IK function -> (thetalist, success)
