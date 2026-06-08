@@ -20,6 +20,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 - [Entry 4: Forward Kinematics](#entry-4---forward-kinematics)
 - [Entry 5: Jacobians](#entry-5---jacobians)
 - [Entry 6: Inverse Kinematics](#entry-6---inverse-kinematics)
+- [Entry 7: Bridge Layer (Perception → IK)](#entry-7---bridge-layer-perception--ik)
 
 ----
 
@@ -329,3 +330,64 @@ round-trip success (noise=1): 0.90
 ### Open questions
 - Tune `λ`, `eomg`, and `ev` against the real control loop's rate and noise once hardware is connected.
 - Add an explicit reachability/limit pre-check so unreachable teleop targets are reported, rather than silently clamped to the nearest feasible pose.
+
+----
+
+## Entry 7 - Bridge Layer: Perception → IK
+
+### Goal
+Connect the perception output (MediaPipe shoulder and wrist world landmarks) to the IK solver input (a 4×4 target pose `T_sd`). This is the C→D→E stretch of the pipeline: anchor the wrist vector on the shoulder, smooth it, map it into robot base-frame coordinates, build `T_sd`, and call `IKinBodyDLS` with a warm start from the previous frame.
+
+### Approach
+Six design decisions were worked through before any code was written. Each is recorded here with its rationale, because the choices interact and the wrong combination produces motion that is subtly wrong in  ways that are hard to diagnose (axis reflections, scale mismatch, IK divergence at rest).
+
+**1. Frame alignment.**
+MediaPipe world landmarks use x-right, y-down, z-toward-camera (confirmed experimentally: y is negative above the hip and becomes more negative as the wrist rises). The robot base frame has x-forward, z-up (established from `shoulder_pan` rotating around the vertical axis and the home-config translation `M[:3,3] ≈ [0.39, 0, 0.23]`). With the operator and robot both facing camera-right, the mapping is:
+
+| MediaPipe | Robot base |
+|---|---|
+| `+x` (right) | `+x` (forward) |
+| `−y` (up) | `+z` (up) |
+| `+z` (depth, deferred) | `+y` (deferred) |
+
+**2. Calibration and scale.**
+A single scalar `scale = REACH / arm_length` maps the MediaPipe-space relative vector to robot-space displacement. `REACH` is the x-z Euclidean distance from the rest position to a FK-computed fully-extended configuration (`[0, 1.7, −1.69, 0, 0]` → ≈ [0.47, 0, 0.07] m), stored as a module constant ≈ 0.57 m. `arm_length` is measured once per session: the operator holds their arm fully extended forward (MediaPipe `+x`), and the x-y norm of the wrist-minus-shoulder vector is recorded. Normalising by torso length (continuous, no explicit calibration pose) was considered and rejected: it requires a hardcoded population-average arm/torso ratio and fallback logic for hip occlusion, adding two new failure modes for a problem that MediaPipe's metric world coordinates already largely handle.
+
+**3. Rest position and Cartesian offset.**
+The operator's wrist at their shoulder (zero relative displacement) maps to a natural upright robot pose. `THETALIST_REST = [0, −1.3, 0, 0, 0]` was chosen by FK exploration: `shoulder_lift = -1.3` rad places the end-effector at T_rest ≈ [0.05, 0, 0.46] m with the arm pointing upward and ≈ 0.44 rad of margin from the joint limit on both sides (the first candidate, `shoulder_lift = −1.7`, was rejected for being within 0.05 rad of the lower limit). The rest position is the origin of robot motion:
+
+```
+robot_x = T_rest[0] + scale * rel_x
+robot_z = T_rest[2] − scale * rel_y
+```
+
+**4. Fixed orientation.**
+Gripper orientation is locked to the end-effector rotation at the rest configuration: `R_fixed = FKinBody(M, Blist, THETALIST_REST)[:3, :3]`. Using `M[:3, :3]` (the home-config orientation, all joints zero) was tried first and caused IK to fail silently at the rest target: the rest position and home orientation are not co-reachable, so the solver could not converge. The rest-config orientation is always co-reachable with T_rest by construction. Full orientation tracking is deferred.
+
+**5. IK failure handling.**
+When `IKinBodyDLS` returns `success=False`, `theta_prev` is not updated. The caller receives the unconverged joint array and `False`; the hardware layer re-sends the last valid angles, holding position until the target re-enters the workspace. This falls out naturally from the warm-start design: `theta_prev` only advances on convergence.
+
+**6. Smoothing.**
+An exponential moving average (`alpha=0.5`) filters the raw 2D relative vector before mapping. The filter state `prev_filtered` is initialised to the first observation on frame zero (`if prev_filtered is None`, not `if not prev_filtered` — the latter raises `ValueError` on numpy arrays). A one-euro filter (adaptive alpha: heavy smoothing at low velocity, light at high) would better handle the jitter-vs-lag tradeoff for interactive control, but adds two parameters with no live pipeline to tune against yet; noted as a future upgrade.
+
+### Implementation notes
+`main.py` holds a `Robot` class:
+- `__init__(M, Blist, limits, theta_prev, alpha)`: stores the robot model; derives `T_rest` and `R_fixed` from `FKinBody(M, Blist, theta_prev)` so the caller only needs to pass joint angles, not a pre-computed Cartesian pose.
+- `_smooth(raw)`: EMA on the 2D relative vector `[rel_x, rel_y]`.
+- `calibrate(shoulder, wrist)`: measures arm length from x-y components only (depth excluded), sets `self.scale`.
+- `step(shoulder, wrist)`: computes relative vector → smooth → map → build `T_sd` → IK → update `theta_prev` on success → return `(thetalist, success)`.
+
+Module-level constants at load time: `THETALIST_REST`; `REACH` computed from FK at the fully-extended configuration.
+
+### Verification
+`tests/test_bridge.py` uses `SimpleNamespace` to fake MediaPipe landmark objects (no camera or robot needed) and checks:
+- After calibrating with a 0.7 m simulated arm extension, `scale ≈ REACH / 0.7` within `1e-4`.
+- `step` with wrist at shoulder (zero relative displacement) returns `success=True` and `thetalist` within 0.1 rad of `THETALIST_REST`.
+- `step` with a mid-range wrist position returns a 5-element array and a bool without crashing.
+
+### Open questions
+- **One-euro filter.** Drop-in upgrade to `_smooth` once the live loop provides tuning data.
+- **Depth axis.** MediaPipe z → robot y held fixed at `T_rest[1]`. Stereo or learned-depth extension would unlock 3D teleop.
+- **Wrist orientation tracking.** `R_fixed` locks to the rest orientation. Mapping wrist roll to `wrist_roll` is a natural v2 extension.
+- **Wiring into the video loop.** `video_mapping.py` needs a calibration trigger (`c` keypress) and a per-frame `step()` call. Entry 8.
+- **Hardware execution.** Joint angles from `step()` need to drive the physical SO-101 via lerobot.
