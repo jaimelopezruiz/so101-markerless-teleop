@@ -21,11 +21,14 @@ GIF_WIDTH = 360        # downscale width (px) for a lighter GIF
 WINDOW = "Live Pose Detection"
 
 # ----- Testing and debugging purposes - True to get testing outputs
-TEST = True
+TEST = False
 
+# --------- MAIN FUNCTION ------------#
+
+def landmark_stream(robot: object) -> tuple:
 # Create PoseLandmarker object for VIDEO mode
-base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
-options = vision.PoseLandmarkerOptions(
+    base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
+    options = vision.PoseLandmarkerOptions(
     base_options=base_options,
     running_mode=vision.RunningMode.VIDEO,
     output_segmentation_masks=True

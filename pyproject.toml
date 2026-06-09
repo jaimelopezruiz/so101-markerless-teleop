@@ -16,4 +16,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["kinematics", "urdf", "perception", "tests"]
+packages = ["kinematics", "urdf", "perception", "tests", "bridge"]

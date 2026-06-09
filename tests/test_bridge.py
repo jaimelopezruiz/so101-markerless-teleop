@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from types import SimpleNamespace
 
-from main import Robot
+from bridge.bridge import Robot
 from kinematics.ik import IKinBodyDLS
 from kinematics.core import Adjoint, TransInv, FKinBody
 from urdf.parser import findMnS
