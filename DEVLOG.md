@@ -7,8 +7,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 > each built and verified on their own before being documented, so these entries
 > follow the build order (each depends on the previous one) rather than diary
 > chronology. Day-by-day journaling resumes at the bridge layer (Entry 7+), where
-> design and writing happen together. A cleaner reference doc can come at the end,
-> using this log as source material.
+> design and writing happen together. Might make a cleaner reference doc once finished.
 
 ----
 
@@ -134,7 +133,7 @@ MediaPipe Pose Landmarker (heavy model, VIDEO running mode) runs on each frame. 
 - The right arm is used: landmark 12 is the shoulder, 16 is the wrist. The shoulder is the anchor, so all target coordinates are expressed relative to it and the mapping does not depend on where the user stands in frame.
 
 ### Verification
-There is no unit test here. Perception is checked visually, since the ground truth is whether the skeleton tracks my arm. Two manual checks:
+There's no unit test here. I check perception visually, since the ground truth is whether the skeleton tracks my arm. Two manual checks:
 - `image_mapping.py` on a still photo: the annotated skeleton overlay lands on the right joints.
 - `video_mapping.py` live: landmarks track the arm in real time, and the shoulder/wrist indices are the expected joints.
 
@@ -178,7 +177,7 @@ Denavit-Hartenberg requires per-joint frame assignments with fiddly conventions 
 - `rpyToRot` convention: fixed-axis roll-pitch-yaw, composed as `R = Rz(y) · Ry(p) · Rx(r)`, matching the URDF/ROS RPY convention.
 
 ### Verification
-There is no standalone parser test. Correctness is established transitively: if `M` or `Slist` were wrong, FK would not match the independent `yourdfpy` model (Entry 4). So a passing FK test also validates the parser.
+There's no standalone parser test. I verify correctness transitively: if `M` or `Slist` were wrong, FK would not match the independent `yourdfpy` model (Entry 4). So a passing FK test also validates the parser.
 
 ### Decisions & open questions
 - The gripper joint is excluded on purpose; v1 is position-only with 5 arm DOF.
@@ -313,7 +312,7 @@ Implemented in `kinematics/ik.py::IKinBodyDLS`. It iterates until both the angul
 
   The two are equivalent for a small initial-guess error but diverge sharply as the guess worsens: at ~2 rad off, 83% vs 35%; at 5 rad, 72.5% vs 1%. Keeping each iterate inside the reachable joint space stops the solver wandering into unreachable regions it cannot recover from. Decision: clamp in-loop (docstring corrected to match).
 - NaN/Inf guard. If a step produces non-finite values (a degenerate Jacobian solve), the solver bails and returns the last good θ with `success=False`, rather than propagating NaNs into joint commands.
-- Warm starting is not a feature of the solver itself; `IKinBodyDLS` just exposes an initial-guess argument (`thetalist0`). The warm start happens in the bridge layer (Entry 7+), which will seed each frame's solve with the previous frame's solution. It is noted here only as the affordance the signature provides; the round-trip test already exercises it by perturbing the true θ as the seed.
+- The solver itself doesn't implement warm starting; `IKinBodyDLS` just exposes an initial-guess argument (`thetalist0`). The warm start happens in the bridge layer (Entry 7+), which will seed each frame's solve with the previous frame's solution. I note it here only as the affordance the signature provides; the round-trip test already exercises it by perturbing the true θ as the seed.
 
 ### Verification
 `tests/test_ik.py` has three checks:
@@ -339,7 +338,7 @@ round-trip success (noise=1): 0.90
 Connect the perception output (MediaPipe shoulder and wrist world landmarks) to the IK solver input (a 4×4 target pose `T_sd`). This is the C→D→E stretch of the pipeline: anchor the wrist vector on the shoulder, smooth it, map it into robot base-frame coordinates, build `T_sd`, and call `IKinBodyDLS` with a warm start from the previous frame.
 
 ### Approach
-Six design decisions were worked through before any code was written. Each is recorded here with its rationale, because the choices interact and the wrong combination produces motion that is subtly wrong in  ways that are hard to diagnose (axis reflections, scale mismatch, IK divergence at rest).
+I worked through six design decisions before writing any code. Each is recorded here with its rationale, because the choices interact and the wrong combination produces motion that is subtly wrong in ways that are hard to diagnose (axis reflections, scale mismatch, IK divergence at rest).
 
 **1. Frame alignment.**
 MediaPipe world landmarks use x-right, y-down, z-toward-camera (confirmed experimentally: y is negative above the hip and becomes more negative as the wrist rises). The robot base frame has x-forward, z-up (established from `shoulder_pan` rotating around the vertical axis and the home-config translation `M[:3,3] ≈ [0.39, 0, 0.23]`). With the operator and robot both facing camera-right, the mapping is:
@@ -351,10 +350,10 @@ MediaPipe world landmarks use x-right, y-down, z-toward-camera (confirmed experi
 | `+z` (depth, deferred) | `+y` (deferred) |
 
 **2. Calibration and scale.**
-A single scalar `scale = REACH / arm_length` maps the MediaPipe-space relative vector to robot-space displacement. `REACH` is the x-z Euclidean distance from the rest position to a FK-computed fully-extended configuration (`[0, 1.7, −1.69, 0, 0]` → ≈ [0.47, 0, 0.07] m), stored as a module constant ≈ 0.57 m. `arm_length` is measured once per session: the operator holds their arm fully extended forward (MediaPipe `+x`), and the x-y norm of the wrist-minus-shoulder vector is recorded. Normalising by torso length (continuous, no explicit calibration pose) was considered and rejected: it requires a hardcoded population-average arm/torso ratio and fallback logic for hip occlusion, adding two new failure modes for a problem that MediaPipe's metric world coordinates already largely handle.
+A single scalar `scale = REACH / arm_length` maps the MediaPipe-space relative vector to robot-space displacement. `REACH` is the x-z Euclidean distance from the rest position to a FK-computed fully-extended configuration (`[0, 1.7, −1.69, 0, 0]` → ≈ [0.47, 0, 0.07] m), stored as a module constant ≈ 0.57 m. `arm_length` is measured once per session: the operator holds their arm fully extended forward (MediaPipe `+x`), and the x-y norm of the wrist-minus-shoulder vector is recorded. I considered normalising by torso length (continuous, no explicit calibration pose) but rejected it: it requires a hardcoded population-average arm/torso ratio and fallback logic for hip occlusion, adding two new failure modes for a problem that MediaPipe's metric world coordinates already largely handle.
 
 **3. Rest position and Cartesian offset.**
-The operator's wrist at their shoulder (zero relative displacement) maps to a natural upright robot pose. `THETALIST_REST = [0, −1.3, 0, 0, 0]` was chosen by FK exploration: `shoulder_lift = -1.3` rad places the end-effector at T_rest ≈ [0.05, 0, 0.46] m with the arm pointing upward and ≈ 0.44 rad of margin from the joint limit on both sides (the first candidate, `shoulder_lift = −1.7`, was rejected for being within 0.05 rad of the lower limit). The rest position is the origin of robot motion:
+The operator's wrist at their shoulder (zero relative displacement) maps to a natural upright robot pose. I chose `THETALIST_REST = [0, −1.3, 0, 0, 0]` through FK exploration: `shoulder_lift = -1.3` rad places the end-effector at T_rest ≈ [0.05, 0, 0.46] m with the arm pointing upward and ≈ 0.44 rad of margin from the joint limit on both sides (I rejected the first candidate, `shoulder_lift = −1.7`, for being within 0.05 rad of the lower limit). The rest position is the origin of robot motion:
 
 ```
 robot_x = T_rest[0] + scale * rel_x
@@ -362,13 +361,13 @@ robot_z = T_rest[2] − scale * rel_y
 ```
 
 **4. Fixed orientation.**
-Gripper orientation is locked to the end-effector rotation at the rest configuration: `R_fixed = FKinBody(M, Blist, THETALIST_REST)[:3, :3]`. Using `M[:3, :3]` (the home-config orientation, all joints zero) was tried first and caused IK to fail silently at the rest target: the rest position and home orientation are not co-reachable, so the solver could not converge. The rest-config orientation is always co-reachable with T_rest by construction. Full orientation tracking is deferred.
+Gripper orientation is locked to the end-effector rotation at the rest configuration: `R_fixed = FKinBody(M, Blist, THETALIST_REST)[:3, :3]`. I tried `M[:3, :3]` (the home-config orientation, all joints zero) first; it caused IK to fail silently at the rest target because the rest position and home orientation are not co-reachable, so the solver could not converge. The rest-config orientation is always co-reachable with T_rest by construction. Full orientation tracking is deferred.
 
 **5. IK failure handling.**
 When `IKinBodyDLS` returns `success=False`, `theta_prev` is not updated. The caller receives the unconverged joint array and `False`; the hardware layer re-sends the last valid angles, holding position until the target re-enters the workspace. This falls out naturally from the warm-start design: `theta_prev` only advances on convergence.
 
 **6. Smoothing.**
-An exponential moving average (`alpha=0.5`) filters the raw 2D relative vector before mapping. The filter state `prev_filtered` is initialised to the first observation on frame zero (`if prev_filtered is None`, not `if not prev_filtered` — the latter raises `ValueError` on numpy arrays). A one-euro filter (adaptive alpha: heavy smoothing at low velocity, light at high) would better handle the jitter-vs-lag tradeoff for interactive control, but adds two parameters with no live pipeline to tune against yet; noted as a future upgrade.
+An exponential moving average (`alpha=0.5`) filters the raw 2D relative vector before mapping. The filter state `prev_filtered` is initialised to the first observation on frame zero (`if prev_filtered is None`, not `if not prev_filtered` — the latter raises `ValueError` on numpy arrays). A one-euro filter (adaptive alpha: heavy smoothing at low velocity, light at high) would better handle the jitter-vs-lag tradeoff for interactive control, but I'd need a live pipeline to tune the two extra parameters; I'll revisit it once that's in place.
 
 ### Implementation notes
 `main.py` holds a `Robot` class:
