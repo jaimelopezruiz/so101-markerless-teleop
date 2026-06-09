@@ -22,7 +22,7 @@ WINDOW = "Live Pose Detection"
 
 # --------- MAIN FUNCTION ------------#
 
-def landmark_stream() -> tuple:
+def landmark_stream() -> tuple[object, object, int]:
     # Create PoseLandmarker object for VIDEO mode
     base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
     options = vision.PoseLandmarkerOptions(

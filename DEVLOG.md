@@ -20,6 +20,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 - [Entry 5: Jacobians](#entry-5---jacobians)
 - [Entry 6: Inverse Kinematics](#entry-6---inverse-kinematics)
 - [Entry 7: Bridge Layer (Perception → IK)](#entry-7---bridge-layer-perception--ik)
+- [Entry 8: Video Loop Integration](#entry-8---video-loop-integration)
 
 ----
 
@@ -335,7 +336,7 @@ round-trip success (noise=1): 0.90
 ## Entry 7 - Bridge Layer: Perception → IK
 
 ### Goal
-Connect the perception output (MediaPipe shoulder and wrist world landmarks) to the IK solver input (a 4×4 target pose `T_sd`). This is the C→D→E stretch of the pipeline: anchor the wrist vector on the shoulder, smooth it, map it into robot base-frame coordinates, build `T_sd`, and call `IKinBodyDLS` with a warm start from the previous frame.
+Connect the perception output (MediaPipe shoulder and wrist world landmarks) to the IK solver input (a 4×4 target pose `T_sd`). This means: anchor the wrist vector on the shoulder, smooth it, map it into robot base-frame coordinates, build `T_sd`, and call `IKinBodyDLS` with a warm start from the previous frame.
 
 ### Approach
 I worked through six design decisions before writing any code. Each is recorded here with its rationale, because the choices interact and the wrong combination produces motion that is subtly wrong in ways that are hard to diagnose (axis reflections, scale mismatch, IK divergence at rest).
@@ -390,3 +391,53 @@ Module-level constants at load time: `THETALIST_REST`; `REACH` computed from FK 
 - **Wrist orientation tracking.** `R_fixed` locks to the rest orientation. Mapping wrist roll to `wrist_roll` is a natural v2 extension.
 - **Wiring into the video loop.** `video_mapping.py` needs a calibration trigger (`c` keypress) and a per-frame `step()` call. Entry 8.
 - **Hardware execution.** Joint angles from `step()` need to drive the physical SO-101 via lerobot.
+
+----
+
+## Entry 8 - Video Loop Integration
+
+### Goal
+Bring all pipeline modules together in one runnable entry point. This is the last software step before hardware: `main.py` connects MediaPipe landmark output, the `Robot` bridge class, and the IK solver into a live loop that computes joint angles from webcam input in real time.
+
+### Approach
+I worked through three design decisions before writing any code.
+
+**1. Generator vs. passing the robot into the video loop.**
+The original `video_mapping.py` was a standalone script: all setup, detection, and display in one blocking `while` loop. Passing the `Robot` instance in and calling `robot.step()` inside that loop would have coupled perception to the bridge layer, making the two modules impossible to test or reuse independently. Instead, `video_mapping.py` was refactored into a generator `landmark_stream()`. A generator solves the blocking problem cleanly: `yield` suspends the loop at each frame and returns control to `main.py`, which processes the result and requests the next frame. The camera opens once before the loop and stays open for the session.
+
+**2. What the generator yields.**
+The generator yields `(shoulder, wrist, key)` per frame, where `key = cv2.waitKey(1) & 0xFF`. Keypresses are detected inside the generator (that is where `cv2.imshow` and `cv2.waitKey` live), but the decision of what to do with a keypress belongs to the orchestrator. Yielding `key` keeps that decision in `main.py` without requiring the perception module to know about calibration or the robot. `'q'` is the one exception handled inside the generator (it breaks the loop), since quitting the window is a perception concern, not a control one.
+
+**3. Calibration gate.**
+`robot.scale` is `None` until `robot.calibrate()` is called. `main.py` checks `robot.scale is not None` before calling `robot.step()`, skipping frames with `continue` until the user calibrates. This is `main.py`'s responsibility, not `Robot`'s: the `Robot` class is a data and logic object that should not know about the video loop or user interaction.
+
+### Implementation notes
+Before this entry I moved `Robot` and its module-level constants (`M`, `Blist`, `THETALIST_REST`, `REACH`) out of `main.py` and into `bridge/bridge.py`. `main.py` was always meant to be the orchestrator, not a module definition file.
+
+`perception/video_mapping.py` refactored into `landmark_stream()`:
+- Setup (once): `PoseLandmarkerOptions` (VIDEO mode, segmentation masks), `PoseLandmarker.create_from_options`, `cv2.VideoCapture(0)`, and `start_time = time.time()` are all initialised before the loop. Previously these were module-level side effects; moving them inside the function means importing the module no longer opens the camera.
+- Per-frame: read frame, RGB convert, MediaPipe detect, annotate and display, then `key = cv2.waitKey(1) & 0xFF`. `waitKey` is called once per frame, after `imshow`, and the result stored; all key checks use the stored value.
+- Yield and break: if landmarks are detected, `yield shoulder, wrist, key`. Break on `key == ord('q')` or window close. Camera release and `cv2.destroyAllWindows()` run in a `finally` block.
+
+`main.py` wires it together:
+- Robot constructed as `bridge.Robot(bridge.M, bridge.Blist, bridge.limits, bridge.THETALIST_REST, alpha=0.5)`, importing constants directly from `bridge.bridge` to avoid duplication.
+- Loop: `for shoulder, wrist, key in video_mapping.landmark_stream()`, branching on `key == ord('c')` to calibrate, `robot.scale is None` to skip, or `robot.step(shoulder, wrist)` otherwise.
+- Wrapped in `run()` and guarded by `if __name__ == "__main__": run()` so the module is importable without side effects.
+
+### Verification
+I ran `python main.py`, pressed `c` with my arm extended forward to calibrate, then moved my arm freely. To sanity-check the output I fed the joint angles from `robot.step()` into `FKinSpace` to recover the end-effector pose. With my wrist held approximately at my shoulder (near-zero relative displacement), the FK result was:
+
+```
+T ≈ [[0.682, -0.033,  0.730, 0.091],
+     [0.049,  0.999,  0.000, 0.000],
+     [-0.730, 0.036,  0.683, 0.362],
+     [0,      0,      0,     1    ]]
+```
+
+Translation `[0.091, ~0, 0.362]` m versus `T_rest = [0.050, ~0, 0.456]` m. The small offset is consistent with the wrist not being perfectly at the shoulder and the EMA filter not having fully settled from the calibration pose. The y coordinate sits at machine-precision zero throughout, confirming depth is correctly held fixed. The pipeline runs without errors end-to-end.
+
+### Open questions
+- **Hardware execution.** Joint angles from `robot.step()` need to drive the physical SO-101 via lerobot. Entry 9.
+- **One-euro filter.** Drop-in upgrade to `_smooth` once the live loop provides tuning data for the adaptive parameters.
+- **Depth axis.** MediaPipe z → robot y is held fixed at `T_rest[1]`. Stereo or learned-depth extension would unlock full 3D teleop.
+- **Wrist orientation tracking.** `R_fixed` locks to the rest orientation. Mapping wrist roll to `wrist_roll` is a natural v2 extension.
