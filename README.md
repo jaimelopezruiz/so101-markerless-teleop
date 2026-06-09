@@ -11,8 +11,11 @@ scope, and status.
 so101-markerless-teleop/
 ├── README.md
 ├── DEVLOG.md
+├── main.py            # entry point: wires perception, bridge, and hardware
 ├── pyproject.toml
 ├── requirements.txt
+├── bridge/
+│   └── bridge.py      # Robot class: calibration, smoothing, IK target construction
 ├── kinematics/
 │   ├── core.py        # trimmed Modern Robotics library (PoE FK, Jacobians, SE(3) utils)
 │   └── ik.py          # IKinBodyDLS, damped least-squares inverse kinematics
@@ -22,14 +25,15 @@ so101-markerless-teleop/
 ├── perception/
 │   ├── pose_detector.py   # MediaPipe landmark drawing/extraction helper
 │   ├── image_mapping.py   # still-image demo
-│   └── video_mapping.py   # live-webcam demo
+│   └── video_mapping.py   # landmark_stream() generator, yields (shoulder, wrist, key)
 ├── models/
 │   └── pose_landmarker_heavy.task   # MediaPipe model (not tracked in git)
 └── tests/
     ├── robot.py           # shared SO-101 model fixtures (M, Slist, Blist, limits)
     ├── test_fk.py         # FK vs yourdfpy
     ├── test_jacobian.py   # Jacobian vs numerical differentiation
-    └── test_ik.py         # IK round-trip, singularity, noise sweep
+    ├── test_ik.py         # IK round-trip, singularity, noise sweep
+    └── test_bridge.py     # Robot class: calibration, step, IK gate
 ```
 
 ## Setup
@@ -42,21 +46,30 @@ pip install -e .                # makes kinematics/, urdf/, perception/, tests/ 
 ```
 
 The editable install (`pip install -e .`) puts the project on the path, so the
-imports resolve no matter where a script is run from.
+imports resolve no matter where a script is run from. The registered packages
+are `kinematics`, `urdf`, `perception`, `bridge`, and `tests`.
 
 The MediaPipe model (`models/pose_landmarker_heavy.task`) is not tracked in
 git; download `pose_landmarker_heavy.task` from MediaPipe and place it there.
 
 ## Running
 
-All scripts use absolute imports and expect to be run as modules from the
-repo root:
+Run the live pipeline from the repo root:
+
+```sh
+python main.py
+```
+
+Press `c` with your arm extended forward to calibrate, then move your arm to
+drive the solver. Press `q` or close the window to stop.
+
+To run the verification tests:
 
 ```sh
 python -m tests.test_fk
 python -m tests.test_jacobian
 python -m tests.test_ik
-python -m perception.video_mapping
+python -m tests.test_bridge
 ```
 
 `kinematics/core.py` is a trimmed subset of the
