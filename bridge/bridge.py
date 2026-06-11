@@ -11,13 +11,13 @@ M, Slist, limits = findMnS()
 Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[1])]).T
 
 THETALIST_REST = np.array([0, -1.3, 0, 0, 0])
+THETALIST_CALIB = np.array([0, 1.7, -1.69, 0, 0])   # Robot pointing forward approx full extension
 
-thetalist = np.array([0, 1.7, -1.69, 0, 0])   # Robot pointing forward approx full extension
-T = FKinBody(M, Blist, thetalist)
+T = FKinBody(M, Blist, THETALIST_CALIB)
 reach_xyz = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - T[:3, 3]
 REACH = np.linalg.norm(reach_xyz[[0, 2]])    # Magnitude of vector difference between full reach and rest point
 
-class Robot:
+class RobotArm:
 
     def __init__(self, M, Blist, limits, theta_prev, alpha):
         self.M = M
@@ -64,3 +64,16 @@ class Robot:
             self.theta_prev = IK_result[0]
 
         return IK_result
+    
+    @staticmethod
+    def to_action(thetalist: np.ndarray) -> dict[str, float]:
+        deg = np.degrees(thetalist)
+        action = {
+            "shoulder_pan.pos":  deg[0],
+            "shoulder_lift.pos": deg[1],
+            "elbow_flex.pos":    deg[2],
+            "wrist_flex.pos":    deg[3],
+            "wrist_roll.pos":    deg[4],
+            "gripper.pos":       0,
+        }
+        return action

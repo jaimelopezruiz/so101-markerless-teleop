@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from types import SimpleNamespace
 
-from bridge.bridge import Robot
+from bridge.bridge import RobotArm
 from kinematics.ik import IKinBodyDLS
 from kinematics.core import Adjoint, TransInv, FKinBody
 from urdf.parser import findMnS
@@ -22,7 +22,7 @@ T = FKinBody(M, Blist, thetalist)
 reach_xyz = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - T[:3, 3]
 REACH = np.linalg.norm(reach_xyz[[0, 2]])    # Magnitude of vector difference between full reach and rest point
 
-robot_test = Robot(M, Blist, limits, THETALIST_REST, 0.5)
+robot_test = RobotArm(M, Blist, limits, THETALIST_REST, 0.5)
 
 shoulder = SimpleNamespace(x= 0.0, y = 0.0)
 wrist_rest = SimpleNamespace(x = 0.0, y = 0.0)
