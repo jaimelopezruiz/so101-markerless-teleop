@@ -1,5 +1,6 @@
 numpy
 matplotlib
 mediapipe
-opencv-python
+opencv-contrib-python
 yourdfpy
+lerobot[feetech]
