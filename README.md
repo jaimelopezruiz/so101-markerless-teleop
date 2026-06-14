@@ -1,9 +1,9 @@
 # Markerless teleoperation: SO-101
 
-Drive a LeRobot SO-101 5-DOF arm from a single webcam: MediaPipe pose
-estimation → frame transforms → from-scratch inverse kinematics → joint
-commands. No wearables, no markers. See [DEVLOG.md](DEVLOG.md) for goals,
-scope, and status.
+Drive a [LeRobot](https://github.com/huggingface/lerobot) SO-101 5-DOF arm from
+a single webcam: MediaPipe pose estimation → frame transforms → from-scratch
+inverse kinematics → joint commands. No wearables, no markers. See
+[DEVLOG.md](DEVLOG.md) for goals, scope, and status.
 
 ## Layout
 
@@ -72,13 +72,21 @@ python -m tests.test_ik
 python -m tests.test_bridge
 ```
 
+## Credits
+
 `kinematics/core.py` is a trimmed subset of the
 [Modern Robotics](http://hades.mech.northwestern.edu/index.php/Modern_Robotics)
 code library (Weng, Hunt, Schultz, Todes).
 
+The SO-101 hardware interface (motor calibration, observations, and action
+commands) is provided by [LeRobot](https://github.com/huggingface/lerobot)
+(Cadene et al., 2024).
+
+```bibtex
 @misc{cadene2024lerobot,
     author = {Cadene, Remi and Alibert, Simon and Soare, Alexander and Gallouedec, Quentin and Zouitine, Adil and Palma, Steven and Kooijmans, Pepijn and Aractingi, Michel and Shukor, Mustafa and Aubakirova, Dana and Russi, Martino and Capuano, Francesco and Pascal, Caroline and Choghari, Jade and Moss, Jess and Wolf, Thomas},
     title = {LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch},
     howpublished = "\url{https://github.com/huggingface/lerobot}",
     year = {2024}
 }
+```
