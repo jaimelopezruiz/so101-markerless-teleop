@@ -11,7 +11,9 @@ M, Slist, limits = findMnS()
 Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[1])]).T
 
 THETALIST_REST = np.array([0, -1.3, 0, 0, 0])
-THETALIST_CALIB = np.array([0, 1.7, -1.69, 0, 0])   # Robot pointing forward approx full extension
+THETALIST_CALIB = np.radians([0, 75, -75, -10, 0])   # Robot pointing forward approx full extension
+THETALIST_STOW = np.radians([0, -105, 96, 80, 0])   # Parked
+THETALIST_INTERM = np.radians([0, -70, 35, 47, 0])
 
 T = FKinBody(M, Blist, THETALIST_CALIB)
 reach_xyz = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - T[:3, 3]
@@ -60,14 +62,17 @@ class RobotArm:
         T_sd[:3, 3] = np.array([robot_x, self.T_rest[1], robot_z])
 
         # Calling IK function -> (thetalist, success)
-        if (IK_result := IKinBodyDLS(self.Blist, self.M, T_sd, self.theta_prev, self.limits))[1] is True:
-            self.theta_prev = IK_result[0]
+        IK_result = IKinBodyDLS(self.Blist, self.M, T_sd, self.theta_prev, self.limits, ev=1e-2, position_only=True)
+        if IK_result[1] is True:
+            self.theta_prev = IK_result[0]     # advance ONLY on success — keeps the redundant joints pinned
+        return IK_result
 
         return IK_result
-    
+
     @staticmethod
     def to_action(thetalist: np.ndarray) -> dict[str, float]:
         deg = np.degrees(thetalist)
+        lerobot_deg[i] = sign[i] * degrees(theta_urdf[i]) + offset[i]
         action = {
             "shoulder_pan.pos":  deg[0],
             "shoulder_lift.pos": deg[1],

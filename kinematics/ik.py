@@ -3,7 +3,7 @@ import numpy as np
 from kinematics.core import FKinBody, JacobianBody, TransInv, MatrixLog6, se3ToVec
 
 
-def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=0.01, maxiters=200):
+def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=5e-3, lam=0.01, maxiters=200, position_only: bool = False):
     """Computes inverse kinematics in the body frame for an open chain robot.
 
     Uses damped least-squares (DLS) Newton-Raphson iteration. Joint limits are
@@ -22,8 +22,10 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
     :param ev: Linear error tolerance (m)
     :param lam: DLS damping factor: higher = more stable but slower
     :param maxiters: Maximum Newton-Raphson iterations
+    :param position_only: Determines whether rotation is kept floating
     :return: (thetalist, success): clamped joint angles and convergence flag
     """
+    
     thetalist = np.array(thetalist0).copy()
     i = 0
 
@@ -38,7 +40,14 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
         thetalist_previous = thetalist.copy()
 
         J = JacobianBody(Blist, thetalist)
-        delta_theta = J.T @ np.linalg.solve(J @ J.T + lam**2 * np.eye(6), Vb)  # DLS step
+        
+        if position_only:
+            Jv = J[3:6, :]          # linear rows only (body twist is [omega; v])
+            vb = Vb[3:6]
+            delta_theta = Jv.T @ np.linalg.solve(Jv @ Jv.T + lam**2 * np.eye(3), vb)
+        else:
+            delta_theta = J.T @ np.linalg.solve(J @ J.T + lam**2 * np.eye(6), Vb)
+
 
         if not np.all(np.isfinite(delta_theta)):  # NaN/Inf guard: bail with last good theta
             return (thetalist_previous, False)
@@ -50,7 +59,7 @@ def IKinBodyDLS(Blist, M, T, thetalist0, joints_limits, eomg=1e-2, ev=1e-3, lam=
         Vb = se3ToVec(MatrixLog6(np.dot(TransInv(Tsb), T)))
         omega_b_mag = np.linalg.norm(Vb[0:3])
         v_b_mag     = np.linalg.norm(Vb[3:6])
-        err = omega_b_mag > eomg or v_b_mag > ev
+        err = (v_b_mag > ev) if position_only else (omega_b_mag > eomg or v_b_mag > ev)
 
         # Clamp to joint limits WITHIN the while loop
         thetalist = np.clip(thetalist, joints_limits[:, 0], joints_limits[:, 1])

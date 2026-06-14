@@ -21,6 +21,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 - [Entry 6: Inverse Kinematics](#entry-6---inverse-kinematics)
 - [Entry 7: Bridge Layer (Perception → IK)](#entry-7---bridge-layer-perception--ik)
 - [Entry 8: Video Loop Integration](#entry-8---video-loop-integration)
+- [Entry 9: Hardware Bring-up (working log)](#entry-9---hardware-bring-up-working-log)
 
 ----
 
@@ -441,3 +442,56 @@ Translation `[0.091, ~0, 0.362]` m versus `T_rest = [0.050, ~0, 0.456]` m. The s
 - **One-euro filter.** Drop-in upgrade to `_smooth` once the live loop provides tuning data for the adaptive parameters.
 - **Depth axis.** MediaPipe z → robot y is held fixed at `T_rest[1]`. Stereo or learned-depth extension would unlock full 3D teleop.
 - **Wrist orientation tracking.** `R_fixed` locks to the rest orientation. Mapping wrist roll to `wrist_roll` is a natural v2 extension.
+
+----
+
+## Entry 9 - Hardware Bring-up (working log)
+
+Rough chronological log of getting the live pipeline to drive the physical SO-101 via lerobot. Not written to the standard of earlier entries: a working journal of actions, decisions, and findings, some still unresolved.
+
+### Setup and conventions
+- Added `lerobot` as the hardware interface. Using `SO101Follower` + `SO101FollowerConfig` from `lerobot.robots.so_follower` (lerobot 0.5.x path).
+- Convention experiment (torque off, via `tests/lerobot_tests.py`): held the arm by hand at known poses and read `get_observation()` to solve the URDF-to-lerobot mapping empirically.
+  - Finding: URDF home matches lerobot's calibrated home, so the per-joint offset is 0.
+  - Finding: all five joint signs are +1 (clockwise positive from the relevant view: right-side for the pitch joints, top-down for pan, head-on for wrist roll).
+  - Result: mapping reduces to `deg_lerobot = degrees(theta_urdf)`. Set `use_degrees=True` on the config.
+- DOF accounting: IK drives 5 joints; the gripper is a 6th motor not computed by IK, held closed (`gripper.pos = 0`) for v1.
+
+### Decisions (worked through before coding)
+- `RobotArm.to_action(thetalist)` is a pure staticmethod returning the action dict (degrees + gripper 0). It does not call `send_action`, so `RobotArm` stays free of lerobot and unit-testable; `main` owns the send. Renamed the bridge class `Robot` -> `RobotArm`.
+- First-command jump: ramp the arm from its powered-on pose to a park pose, hold until `c`. Parking at the extended calibration pose makes calibration a near no-op in joint space, since the first `step()` target sits a full `REACH` from rest.
+- `max_relative_target` clamp lives in the lerobot config (hardware-level enforcement on every command). Startup ramp uses a separate, smaller per-step value. Two named constants, different magnitudes (startup gentle, teleop responsive).
+- `success=False` policy: skip the send, let the servos hold their last goal. `step()` always targets the live wrist position, so recovery has no stale lurch; the clamp bounds the catch-up.
+- Smoothing: keep task-space EMA only for v1; add joint-space filtering only if the real servos buzz.
+- Loop pacing: the teleop loop is paced by the camera (the generator blocks on `cap.read()`), so no manual sleep. Only the startup ramp needs explicit `sleep`. Worst-case joint speed = clamp x loop rate.
+
+### Implementation
+- `main.py`: module-level config + follower, `run()` does `connect(calibrate=False)` -> startup ramp -> main loop -> stow ramp -> `disconnect()` in a `finally`.
+- `IKinBodyDLS` gained a `position_only` flag (see findings).
+- Park pose `THETALIST_CALIB`, stow pose `THETALIST_STOW` added to `bridge.py` as `np.radians([...])`.
+
+### Bugs and findings (chronological)
+- `TypeError: 5` from `send_action`. Cause: `max_relative_target` was an `int`; lerobot's `ensure_safe_goal_position` checks `isinstance(x, float)` and re-raises the value otherwise. Fix: `5 -> 5.0`.
+- `to_action` first written without `@staticmethod` (would bind the instance to `thetalist`). Fixed; corrected hints to `np.ndarray` / `dict[str, float]`.
+- Over-corrected the warm-start fix by passing `THETALIST_CALIB` to the constructor, which also moved `T_rest` and `R_fixed`. Reverted constructor to `THETALIST_REST`; re-seed `theta_prev = THETALIST_CALIB` after the ramp instead (warm-start only).
+- "Arm doesn't follow" + scale blow-up. Cause: bridge uses only x,y of the world landmarks (depth dropped), so extending the arm toward the camera gives a tiny in-plane vector and `scale = REACH / arm_length` explodes. Fix (usage): calibrate and move in the frontal plane, side-on, arm extended in-plane. Scale then sane (~1.1-1.3).
+- `success=False` every frame, joints saturating at limits. Root cause: the bridge fixes the full rest orientation (`R_fixed`), so each target is 6 constraints (position + orientation) on a 5-joint arm. IK success needs both `omega` and `v` within tolerance, so any translated target is unreachable. Only the rest point (verified in Entry 8) sat on the reachable manifold, which is why it slipped through.
+  - Fix: position-only IK. Added `position_only` to `IKinBodyDLS`: step on the linear rows only (`Jv = J[3:6,:]`, `vb = Vb[3:6]`, damping `eye(3)`), success on `v` only. `step()` calls it with `position_only=True`. Orientation floats, acceptable for v1.
+- After position-only: joint outputs sane (no saturation) but still a majority of `False`. Two causes:
+  - `ev = 1e-3` (1 mm) far tighter than the cm-level MediaPipe input warrants.
+  - Warm-start chicken-and-egg: `theta_prev` advances only on success, stays stuck at the far park seed (lift 90 deg) while solutions live near lift -60 deg, so the solve never quite converges and the seed never improves.
+- Tried always advancing `theta_prev` (every frame, not just on success). Backfired: in position-only mode pan and wrist_roll are redundant and only the seed pins them, so chasing the previous unconstrained result let them null-space-drift to their limits (wild +-110 / +-157 flailing). Reverted.
+  - Settled fix (pending verification): advance `theta_prev` on success only (stable seed pins the redundant joints) + loosen `ev` to `1e-2` so near-misses register as success and bootstrap the seed into the working region.
+- Startup/stow ramp tripped the clamp constantly and parked short of target. Cause: open-loop ramp (interpolate from a fixed start over fixed N, paced by sleep) assumes instant servo tracking; under gravity load the servo lags, so the commanded goal outruns the present position (clamp fires) and the loop ends before arrival (pose not replicated). Fix: closed-loop ramp, re-read `get_observation()` each step, step from the present position, loop until within tolerance.
+- Closed-loop ramp v1 capped each joint independently, so joints arrived at different times and the gripper scraped the table (elbow flex last to settle). Fix: proportional scaling, the largest-gap joint moves a full step and the rest move the same fraction, so all joints arrive together.
+
+### Current status
+- Pipeline runs end to end: startup ramp -> calibrate on `c` -> teleop -> stow ramp on exit -> clean disconnect.
+- Convention, scale, ramps (clamp-free, synchronized), and position-only IK all working.
+- Open: tracking still returns many `False`; the latest fix (on-success seed advance + `ev=1e-2`) is not yet confirmed to give a steady success train. If frame-one will not bootstrap, bump `maxiters`.
+
+### Pending
+- Credit `lerobot` in the README next to Modern Robotics.
+- Tune `scale`, `STARTUP_STEP_DEG`, `MAX_RELATIVE_TARGET`, `ev` on hardware.
+- Possible stow via-point if the synchronized straight-line path still dips through the table.
+- Write up the convention-calibration experiment and hardware bring-up properly; this entry is the raw material.
