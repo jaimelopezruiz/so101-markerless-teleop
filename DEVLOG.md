@@ -21,6 +21,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 - [Entry 6: Inverse Kinematics](#entry-6---inverse-kinematics)
 - [Entry 7: Bridge Layer (Perception → IK)](#entry-7---bridge-layer-perception--ik)
 - [Entry 8: Video Loop Integration](#entry-8---video-loop-integration)
+- [Entry 9: Hardware Bring-up](#entry-9---hardware-bring-up)
 - [Entry 9: Hardware Bring-up (working log)](#entry-9---hardware-bring-up-working-log)
 
 ----
@@ -445,53 +446,57 @@ Translation `[0.091, ~0, 0.362]` m versus `T_rest = [0.050, ~0, 0.456]` m. The s
 
 ----
 
-## Entry 9 - Hardware Bring-up (working log)
+## Entry 9 - Hardware Bring-up
 
-Rough chronological log of getting the live pipeline to drive the physical SO-101 via lerobot. Not written to the standard of earlier entries: a working journal of actions, decisions, and findings, some still unresolved.
+### Goal
+Close the loop and drive the physical SO-101 from the live pipeline through lerobot, with teleop that genuinely reproduces my arm pose rather than vaguely twitching toward it. This is the long entry. Bring-up surfaced a chain of issues across every layer (joint frame, IK, workspace, mapping, smoothing), and each one masked the next until I fixed it.
 
-### Setup and conventions
-- Added `lerobot` as the hardware interface. Using `SO101Follower` + `SO101FollowerConfig` from `lerobot.robots.so_follower` (lerobot 0.5.x path).
-- Convention experiment (torque off, via `tests/lerobot_tests.py`): held the arm by hand at known poses and read `get_observation()` to solve the URDF-to-lerobot mapping empirically.
-  - Finding: URDF home matches lerobot's calibrated home, so the per-joint offset is 0.
-  - Finding: all five joint signs are +1 (clockwise positive from the relevant view: right-side for the pitch joints, top-down for pan, head-on for wrist roll).
-  - Result: mapping reduces to `deg_lerobot = degrees(theta_urdf)`. Set `use_degrees=True` on the config.
-- DOF accounting: IK drives 5 joints; the gripper is a 6th motor not computed by IK, held closed (`gripper.pos = 0`) for v1.
+### The hardware interface
+`lerobot` (0.5.x) is the hardware layer: `SO101Follower` + `SO101FollowerConfig` from `lerobot.robots.so_follower`, with `use_degrees=True`. The five arm joints are driven by IK; the gripper is a sixth motor the IK never sees, held closed (`gripper.pos = 0`) for v1.
 
-### Decisions (worked through before coding)
-- `RobotArm.to_action(thetalist)` is a pure staticmethod returning the action dict (degrees + gripper 0). It does not call `send_action`, so `RobotArm` stays free of lerobot and unit-testable; `main` owns the send. Renamed the bridge class `Robot` -> `RobotArm`.
-- First-command jump: ramp the arm from its powered-on pose to a park pose, hold until `c`. Parking at the extended calibration pose makes calibration a near no-op in joint space, since the first `step()` target sits a full `REACH` from rest.
-- `max_relative_target` clamp lives in the lerobot config (hardware-level enforcement on every command). Startup ramp uses a separate, smaller per-step value. Two named constants, different magnitudes (startup gentle, teleop responsive).
-- `success=False` policy: skip the send, let the servos hold their last goal. `step()` always targets the live wrist position, so recovery has no stale lurch; the clamp bounds the catch-up.
-- Smoothing: keep task-space EMA only for v1; add joint-space filtering only if the real servos buzz.
-- Loop pacing: the teleop loop is paced by the camera (the generator blocks on `cap.read()`), so no manual sleep. Only the startup ramp needs explicit `sleep`. Worst-case joint speed = clamp x loop rate.
+I made `RobotArm.to_action(thetalist)` a pure staticmethod that returns the `{joint.pos: deg}` action dict. It never calls `send_action`, so `RobotArm` stays free of lerobot and unit-testable, and `main` owns the I/O and the `success=False` policy: skip the send and let the servos hold their last goal. Since `step()` always targets the live wrist, recovery has no stale lurch. The teleop loop is paced by the camera (the generator blocks on `cap.read()`), so only the ramps need an explicit `sleep`. I first wrote `to_action` without `@staticmethod`, which would have bound the instance to `thetalist`, and fixed that early.
 
-### Implementation
-- `main.py`: module-level config + follower, `run()` does `connect(calibrate=False)` -> startup ramp -> main loop -> stow ramp -> `disconnect()` in a `finally`.
-- `IKinBodyDLS` gained a `position_only` flag (see findings).
-- Park pose `THETALIST_CALIB`, stow pose `THETALIST_STOW` added to `bridge.py` as `np.radians([...])`.
+Startup and stow use closed-loop ramps. My first attempt was open-loop, interpolating from a fixed start over N steps paced by `sleep`, which assumes instant servo tracking. Under gravity the servo lags, the commanded goal outruns the present position, the `max_relative_target` clamp fires every step, and the loop ends before the arm arrives. The fix re-reads `get_observation()` each step and moves from the present position until within tolerance. A second pass made it synchronized, so the largest-gap joint moves a full step and the rest move the same fraction; that way all joints arrive together instead of the elbow settling last and dragging the gripper through the table.
 
-### Bugs and findings (chronological)
-- `TypeError: 5` from `send_action`. Cause: `max_relative_target` was an `int`; lerobot's `ensure_safe_goal_position` checks `isinstance(x, float)` and re-raises the value otherwise. Fix: `5 -> 5.0`.
-- `to_action` first written without `@staticmethod` (would bind the instance to `thetalist`). Fixed; corrected hints to `np.ndarray` / `dict[str, float]`.
-- Over-corrected the warm-start fix by passing `THETALIST_CALIB` to the constructor, which also moved `T_rest` and `R_fixed`. Reverted constructor to `THETALIST_REST`; re-seed `theta_prev = THETALIST_CALIB` after the ramp instead (warm-start only).
-- "Arm doesn't follow" + scale blow-up. Cause: bridge uses only x,y of the world landmarks (depth dropped), so extending the arm toward the camera gives a tiny in-plane vector and `scale = REACH / arm_length` explodes. Fix (usage): calibrate and move in the frontal plane, side-on, arm extended in-plane. Scale then sane (~1.1-1.3).
-- `success=False` every frame, joints saturating at limits. Root cause: the bridge fixes the full rest orientation (`R_fixed`), so each target is 6 constraints (position + orientation) on a 5-joint arm. IK success needs both `omega` and `v` within tolerance, so any translated target is unreachable. Only the rest point (verified in Entry 8) sat on the reachable manifold, which is why it slipped through.
-  - Fix: position-only IK. Added `position_only` to `IKinBodyDLS`: step on the linear rows only (`Jv = J[3:6,:]`, `vb = Vb[3:6]`, damping `eye(3)`), success on `v` only. `step()` calls it with `position_only=True`. Orientation floats, acceptable for v1.
-- After position-only: joint outputs sane (no saturation) but still a majority of `False`. Two causes:
-  - `ev = 1e-3` (1 mm) far tighter than the cm-level MediaPipe input warrants.
-  - Warm-start chicken-and-egg: `theta_prev` advances only on success, stays stuck at the far park seed (lift 90 deg) while solutions live near lift -60 deg, so the solve never quite converges and the seed never improves.
-- Tried always advancing `theta_prev` (every frame, not just on success). Backfired: in position-only mode pan and wrist_roll are redundant and only the seed pins them, so chasing the previous unconstrained result let them null-space-drift to their limits (wild +-110 / +-157 flailing). Reverted.
-  - Settled fix (pending verification): advance `theta_prev` on success only (stable seed pins the redundant joints) + loosen `ev` to `1e-2` so near-misses register as success and bootstrap the seed into the working region.
-- Startup/stow ramp tripped the clamp constantly and parked short of target. Cause: open-loop ramp (interpolate from a fixed start over fixed N, paced by sleep) assumes instant servo tracking; under gravity load the servo lags, so the commanded goal outruns the present position (clamp fires) and the loop ends before arrival (pose not replicated). Fix: closed-loop ramp, re-read `get_observation()` each step, step from the present position, loop until within tolerance.
-- Closed-loop ramp v1 capped each joint independently, so joints arrived at different times and the gripper scraped the table (elbow flex last to settle). Fix: proportional scaling, the largest-gap joint moves a full step and the rest move the same fraction, so all joints arrive together.
+Two lerobot gotchas are worth recording. `max_relative_target` must be a `float`, because `ensure_safe_goal_position` does an `isinstance(x, float)` check and re-raises the value otherwise, so an `int` `5` surfaced as `TypeError: 5`. And that clamp triggers an extra `Present_Position` read on every `send_action`, so it costs loop rate as well as bounding motion.
 
-### Current status
-- Pipeline runs end to end: startup ramp -> calibrate on `c` -> teleop -> stow ramp on exit -> clean disconnect.
-- Convention, scale, ramps (clamp-free, synchronized), and position-only IK all working.
-- Open: tracking still returns many `False`; the latest fix (on-success seed advance + `ev=1e-2`) is not yet confirmed to give a steady success train. If frame-one will not bootstrap, bump `maxiters`.
+### Joint frame: URDF to lerobot
+lerobot reports and accepts each joint in true degrees referenced to the motor's mechanical mid-range (`motors_bus._normalize`, DEGREES mode), while the URDF frame has its own zero and sign. Both are real degrees, so the map between them can only be a per-joint sign and offset.
 
-### Pending
-- Credit `lerobot` in the README next to Modern Robotics.
-- Tune `scale`, `STARTUP_STEP_DEG`, `MAX_RELATIVE_TARGET`, `ev` on hardware.
-- Possible stow via-point if the synchronized straight-line path still dips through the table.
-- Write up the convention-calibration experiment and hardware bring-up properly; this entry is the raw material.
+I pinned it down with an isolated diagnostic (`tests/joint_check.py`, torque off), deliberately decoupled from IK and teleop. The key lever is that `get_observation()` returns raw motor degrees that never pass through my correction, so I can pose the arm by hand and compare the FK-predicted end-effector against the real gripper for ground truth. Two findings came out of it: the URDF home coincides with the mechanical mid-range (the URDF limits are symmetric, so their midpoint is the URDF zero), which makes every offset 0; and all five signs are +1. The map reduces to `deg_lerobot = degrees(theta_urdf)`, the identity. I still keep it as an explicit `JOINT_SIGN` and `JOINT_OFFSET` layer in `to_action`, so the convention is documented and re-derivable rather than implicit.
+
+One trap cost me real time, so I want it on the record. Eyeballing teleop, shoulder_lift looked sign-flipped, and flipping it seemed to help, so I flipped its sign in the pose constants to match. Both were wrong. The isolated test proves the frame is identity, and what actually looked better was a coincidence inside a pipeline that was broken elsewhere. Worse, flipping the sign of the pose constants quietly relocated the whole teleop workspace, because it moved `T_rest` (see the rest-pose fix below). The lesson I took away is to determine joint signs in isolation, since teleop confounds too many errors at once to read a single sign off it.
+
+### Why teleop was bad — the debugging chain
+The arm moved, but reproduced pose poorly. The causes, roughly in the order they surfaced and were peeled back:
+
+**Orientation over-constraint → position-only IK.** The bridge fixes the full rest orientation `R_fixed`, making every target six constraints (position + orientation) on a five-joint arm. Only the rest point itself sits on the reachable manifold, so every *translated* target failed and the joints saturated. Fix: position-only IK. `IKinBodyDLS` gained a `position_only` flag that steps on the linear rows only (`Jv = J[3:6,:]`, `vb = Vb[3:6]`, damping `eye(3)`) and tests success on `v` alone. Orientation floats — acceptable for v1.
+
+**Convergence: tolerance and warm-start.** Position-only still returned mostly `False`. Two causes: `ev = 1e-3` (1 mm) was far tighter than cm-level MediaPipe input warrants, and a warm-start chicken-and-egg — `theta_prev` advances only on success but stays stuck at the far park seed while solutions live elsewhere, so it never converges to bootstrap itself. Loosening to `ev = 1e-2` lets near-misses register as success and walk the seed into the working region.
+
+**Redundant-joint drift → null-space posture bias.** Position-only leaves the arm redundant (five joints on a 2-D target), and the leftover freedom was resolved arbitrarily — the elbow simply sat wherever the seed left it (the park seed pinned it near -75°, so the arm stayed folded and unnatural). An early hack, advancing `theta_prev` every frame, backfired: with only the seed pinning the redundant pan and wrist_roll, chasing the previous unconstrained result let them null-space-drift to their limits (±110/±157 flailing). The proper fix keeps advance-on-success (a stable seed pins the redundant joints) *and* adds a null-space secondary task to `IKinBodyDLS`: `Δθ += (I − J⁺J)·k0·(θ_pref − θ)`, which biases the redundant joints toward a preferred posture without disturbing position tracking. With `k0 = 0.3` and `θ_pref = REST`, the elbow relaxes from a seed-stuck −74° to ~−5° across the workspace, IK success essentially unchanged.
+
+**Workspace mismatch → annulus fit.** The scale mapped a full human reach onto `REACH ≈ 0.53 m` — but that is the workspace *diagonal*, applied per-axis, so it overshot the reachable set roughly 4×. Large fractions of arm motion mapped to targets the arm cannot reach, and IK either froze (held position) or saturated. I fit the actual reachable region in the x–z plane (sweeping shoulder_lift × elbow over their limits): an annulus about the shoulder pivot `(0.07, 0.18)` with radius ~`[0.165, 0.447]`. Targets are now built inside this band by construction.
+
+**Rest at the top of the workspace → central rest + no-jump startup.** The original rest `[0, −1.3, 0, 0, 0]` placed the EE near the top of reach (z ≈ 0.46), so almost every hand direction pushed the arm *outward* — it extended readily but barely folded. Moved `THETALIST_REST` to a central pose `[0, −37.7°, 11.4°, 19.2°, 0]` (EE ≈ (0.30, 0.30), mid-radius). Because `T_rest`, `R_fixed` and `θ_pref` all derive from this one constant, the single change recenters the mapping, the held orientation and the posture bias together. I also dropped the old park-at-calibration-pose startup — which left the arm a full reach from the first teleop target, so `step()` lurched on frame one — in favour of ramping to REST and seeding `theta_prev = REST`. Hand-at-neutral now maps straight to the pose the ramp already parked at, so there is no first-frame jump (verified: `|θ − REST|` = 0 on the first step).
+
+**Jitter → one-euro filter.** The fixed-α EMA forced a single jitter-vs-lag tradeoff, and the servos buzzed at rest. Replaced `_smooth` with a one-euro filter: the cutoff adapts to the smoothed hand speed, so it filters heavily when the hand is still and lightly when it moves. Two knobs, `min_cutoff` and `beta`, tunable live. This closes the Entry 8 open item, finally actionable now that there is a real signal to tune against.
+
+**Command throttle → `max_relative_target`.** Folding is the largest reconfiguration in the workspace (~44° of elbow travel from rest), and the conservative 5°/frame cap made it creep over ~9 frames and never complete during normal motion — extending, a smaller move, kept up, which is exactly why extend worked and fold didn't. Raised to 10–20°, which lets a fold finish in a few frames while still bounding a runaway. (Targets are already smoothed, radius-bounded and success-gated upstream, so the cap is a backstop, not the safety story.)
+
+**The mapping itself → radial (extension) mapping.** The deepest issue, and the one that finally made folding work. The bridge mapped *hand position → EE position* (a translation anchored at rest). Under that map, folding the robot required moving the hand 30–55 cm *leftward across the torso* — anatomically impossible — so deep folds were never commandable, no matter the scale. And the metric scale was never the culprit: MediaPipe `pose_world_landmarks` are a learned, hip-centred metric estimate, designed to be invariant to camera distance, and per-session calibration cancels any body-size error. I replaced the map with a radial one that matches the operator's intent: arm *extension* `|shoulder→wrist|` → robot reach *radius*, and hand *direction* → EE *angle* about the workspace centre. Folding your elbow now shrinks the radius and curls the robot; extending reaches out; direction tracking (up→up, forward→forward) is preserved. Extension over `[EXT_MIN_FRAC, 1]` maps onto radius `[WS_RMIN, MAP_RMAX]`, and near the shoulder, where direction is undefined, the last direction is held to avoid snapping. This supersedes the Cartesian mapping of Entry 7 and the `scale = REACH/arm_length` calibration — calibration now just records arm length.
+
+### Robustness and housekeeping
+- Calibration averages a window of frames (median of ~20) rather than trusting one noisy landmark frame; `start_calibration()` resets the buffer and `calibrate()` returns `True` once it fills.
+- Frames whose shoulder/wrist landmark `visibility < 0.5` are skipped, so low-confidence tracking never drives the arm.
+- The per-frame debug print is throttled to a heartbeat plus a line on every IK hold.
+- Removed code the rework made dead: `REACH`, the park/intermediate pose constants, and the workspace clamp (the radial map is in-band by construction).
+
+### Verification
+Confirmed on the physical arm: the URDF↔lerobot frame is identity (FK matches the gripper at home and through the ramps); startup parks at the central rest with no jump into teleop; the arm both folds (curl your elbow) and extends, with the elbow holding a natural posture instead of collapsing to the seed; jitter is visibly down with the one-euro filter; and the synchronized ramps reach their targets without tripping the clamp. In sim, full extension reaches radius ≈ 0.40 and a fully folded arm ≈ 0.16 (the physical fold limit), monotonically with extension.
+
+### Open questions
+- **Orientation tracking.** Position-only floats the gripper orientation. Mapping the operator's forearm/wrist to `wrist_flex`/`wrist_roll` (and dropping the `R_fixed` float) is the next fidelity step.
+- **Depth / 3-D.** The depth axis is still dropped (MediaPipe z → robot y held fixed). Stereo or learned depth would unlock the third dimension.
+- **One-euro tuning.** `min_cutoff`/`beta` sit at sane defaults; they want a proper sweep against the live loop.
+- **README.** Credit `lerobot` next to Modern Robotics.
