@@ -12,20 +12,15 @@ from urdf.parser import findMnS
 M, Slist, limits = findMnS()
 Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[1])]).T
 
-# All poses are in the URDF joint frame (radians). The URDF<->motor map is
-# identity (JOINT_SIGN all +1, JOINT_OFFSET 0, verified with tests/joint_check.py),
-# so these are also the motor commands. Do NOT sign-flip these to fix motor
-# behaviour: the only place a motor sign belongs is JOINT_SIGN.
-# REST is a central pose (EE ~(0.30, 0.30), mid-radius) so hand motion folds AND
-# extends the arm; it drives T_rest, R_fixed and theta_pref.
+# Joint poses in the URDF frame (radians). The URDF<->motor map is identity
+# (JOINT_SIGN all +1, JOINT_OFFSET 0, verified with tests/joint_check.py), so
+# these are also the motor commands. Never sign-flip these to fix motor
+# behaviour -- a motor sign belongs only in JOINT_SIGN.
+# REST is the teleop neutral and the reference pose: it sets the startup ramp
+# target, the fixed gripper orientation R_fixed, the held y-coordinate, and the
+# null-space posture bias. Chosen central (EE ~(0.30, 0.30)).
 THETALIST_REST = np.radians([0, -37.7, 11.4, 19.2, 0])
-THETALIST_CALIB = np.radians([0, 75, -75, -10, 0])   # Robot pointing forward approx full extension
-THETALIST_STOW = np.radians([0, -105, 96, 80, 0])    # Parked
-THETALIST_INTERM = np.radians([0, -70, 35, 47, 0])
-
-T = FKinBody(M, Blist, THETALIST_CALIB)
-reach_xyz = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - T[:3, 3]
-REACH = np.linalg.norm(reach_xyz[[0, 2]])    # Magnitude of vector difference between full reach and rest point
+THETALIST_STOW = np.radians([0, -105, 96, 80, 0])    # Parked (shutdown ramp target)
 
 # --- lerobot joint-frame calibration --------------------------------------
 # lerobot accepts/reports each joint in TRUE degrees referenced to the motor's
@@ -44,13 +39,12 @@ JOINT_SIGN   = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
 JOINT_OFFSET = np.array([0.0, 0.0, 0.0, 0.0, 0.0])   # degrees, lerobot frame
 
 # --- reachable workspace (x-z plane, pan=0) -------------------------------
-# Annulus fit by sweeping shoulder_lift & elbow over their limits: centre is the
-# shoulder pivot, radii are the folded/extended reach. Targets are clamped into
-# this band so unreachable commands no longer stall or saturate the IK.
-WS_CENTER = np.array([0.07, 0.18])   # (x, z) metres
-WS_RMIN, WS_RMAX = 0.165, 0.42       # RMIN at the physical fold limit so the arm
-                                     # can curl as tightly as it reaches; RMAX
-                                     # just inside the true max (0.447)
+# Shoulder-pivot centre and tightest reach radius, from an annulus fit (sweeping
+# shoulder_lift & elbow over their limits; true reach is ~[0.165, 0.447] m). The
+# radial mapping below builds targets within [WS_RMIN, MAP_RMAX], so every target
+# is reachable by construction and needs no extra clamping.
+WS_CENTER = np.array([0.07, 0.18])   # (x, z) metres, shoulder pivot
+WS_RMIN = 0.165                      # tightest fold (physical min reach)
 
 # --- radial (extension) mapping -------------------------------------------
 # Map the operator's ARM EXTENSION (|shoulder->wrist|) to the robot's reach
@@ -61,7 +55,7 @@ WS_RMIN, WS_RMAX = 0.165, 0.42       # RMIN at the physical fold limit so the ar
 # impossible), so deep folds were never commandable.
 # Extension fraction over [EXT_MIN_FRAC, 1] -> reach radius over [WS_RMIN, MAP_RMAX].
 EXT_MIN_FRAC = 0.15   # arm this fraction extended -> fully folded robot (WS_RMIN)
-MAP_RMAX = 0.40       # radius at full extension; < WS_RMAX so edge targets stay reachable
+MAP_RMAX = 0.40       # radius at full extension; inside the true max so edges stay reachable
 
 # Null-space posture bias: how hard IK pulls the redundant joints toward the
 # rest posture each iteration. Keeps the elbow from folding into awkward poses
@@ -80,6 +74,7 @@ class RobotArm:
         self.theta_prev = theta_prev.copy()
         self.theta_pref = theta_prev.copy()   # fixed preferred posture for null-space biasing
         self.arm_length = None                # set by calibrate(); gates teleop until then
+        self._calib_buf = []                  # arm-length samples accumulated during calibration
         self.prev_dir = np.array([0.0, 1.0])  # last EE direction (fallback when hand near shoulder)
         # One-euro filter state/params (see _smooth).
         self.min_cutoff = min_cutoff   # Hz: lower = more smoothing when the hand is still
@@ -125,28 +120,21 @@ class RobotArm:
         self.prev_filtered = a * raw + (1.0 - a) * self.prev_filtered
         return self.prev_filtered
 
-    def calibrate(self, shoulder: object, wrist: object):
-        """Records the operator's full arm extension (|shoulder->wrist| in the x-y
-        plane), used to normalise extension into a robot reach radius in step().
+    def start_calibration(self) -> None:
+        """Begins a fresh arm-length calibration (clears any prior samples)."""
+        self._calib_buf = []
 
-        TODO (Tier 3): average arm_length over several frames to reject landmark
-        noise. That needs the caller to sample multiple frames, so it lives in
-        main.py's loop, not here."""
-        dx, dy = wrist.x - shoulder.x, wrist.y - shoulder.y
-        self.arm_length = np.linalg.norm([dx, dy])
-
-    @staticmethod
-    def _clamp_to_workspace(x: float, z: float) -> tuple[float, float]:
-        """Clamps an (x, z) target into the reachable annulus so out-of-range
-        commands are pulled to the nearest reachable point instead of stalling
-        or saturating the IK."""
-        v = np.array([x, z]) - WS_CENTER
-        r = np.linalg.norm(v)
-        if r < 1e-9:
-            return x, z
-        r_clamped = np.clip(r, WS_RMIN, WS_RMAX)
-        p = WS_CENTER + v * (r_clamped / r)
-        return float(p[0]), float(p[1])
+    def calibrate(self, shoulder: object, wrist: object, n_samples: int = 20) -> bool:
+        """Accumulates one arm-extension sample (|shoulder->wrist| in the x-y plane).
+        Once n_samples are collected, sets arm_length to their median (robust to the
+        odd bad landmark frame) and returns True; otherwise returns False. The caller
+        keeps feeding frames until it returns True (see main.py)."""
+        self._calib_buf.append(np.linalg.norm([wrist.x - shoulder.x, wrist.y - shoulder.y]))
+        if len(self._calib_buf) >= n_samples:
+            self.arm_length = float(np.median(self._calib_buf))
+            self._calib_buf = []
+            return True
+        return False
 
     def step(self, shoulder: object, wrist: object):
         """Smooths the shoulder->wrist vector, maps arm extension->reach radius and
@@ -171,7 +159,6 @@ class RobotArm:
         if n > 1e-6:
             self.prev_dir = direction / n
         robot_x, robot_z = WS_CENTER + radius * self.prev_dir
-        robot_x, robot_z = self._clamp_to_workspace(robot_x, robot_z)
 
         # Forming 4x4 matrix for that position and (for now) fixed orientation
         T_sd = np.eye(4)

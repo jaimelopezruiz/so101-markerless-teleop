@@ -29,8 +29,12 @@ def ee_radius(thetalist):
     return np.linalg.norm([p[0] - WS_CENTER[0], p[2] - WS_CENTER[1]])
 
 
-# Calibration records arm length (x-y norm of full extension).
-robot_test.calibrate(shoulder, wrist_extended)
+# Calibration accumulates samples and sets arm_length (median) once enough arrive.
+robot_test.start_calibration()
+done = False
+for _ in range(20):
+    done = robot_test.calibrate(shoulder, wrist_extended, n_samples=20)
+assert done is True
 assert abs(robot_test.arm_length - ARM) < 1e-4
 
 # Full extension -> reach radius near MAP_RMAX (robot extended).

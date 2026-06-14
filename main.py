@@ -10,12 +10,16 @@ from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
 STARTUP_STEP_DEG = 5.0
 DT = 1/30
-# Per-joint cap on how far a single action may move from the present position.
-# Folding the arm is the largest reconfiguration (~44 deg of elbow travel), so a
-# small cap makes it creep over many frames and never complete during normal hand
-# motion. 20 deg lets it fold in ~2-3 frames while still bounding a runaway jump.
-# (Targets are already smoothed + workspace-clamped + success-gated upstream.)
+# Per-joint cap (deg) on how far a single action may move from the present
+# position. Folding is the largest reconfiguration (~44 deg of elbow travel), so
+# too small a cap makes it creep over many frames and never complete during
+# normal hand motion; at 10 deg it folds in ~5 frames while still bounding a
+# runaway jump. (Targets are already smoothed + radius-bounded + success-gated
+# upstream.) Raise toward 20 for snappier folds, or None to remove the cap.
 MAX_RELATIVE_TARGET = 10.0
+
+VIS_THRESH = 0.5    # min landmark visibility to trust a frame for driving the arm
+CALIB_FRAMES = 20   # frames averaged (median) when measuring the operator's arm length
 
 PORT = "COM3"       # find with lerobot's find_port utility
 ROBOT_ID = "jlo"    # must match the id set when calibrating arm
@@ -56,19 +60,34 @@ def run() -> None:
         arm.theta_prev = bridge.THETALIST_REST.copy()
         
         ## MAIN LOOP
+        calibrating = False
+        frame = 0
         for shoulder, wrist, key in video_mapping.landmark_stream():
-            # Hold off teleop until the operator calibrates their arm length ('c').
+            frame += 1
+
+            # Ignore frames where the tracked joints aren't confidently seen, so
+            # low-confidence landmarks never drive the arm.
+            if min(getattr(shoulder, "visibility", 1.0),
+                   getattr(wrist, "visibility", 1.0)) < VIS_THRESH:
+                continue
+
+            # 'c' (re)starts arm-length calibration; average a few frames before use.
             if key == ord('c'):
-                arm.calibrate(shoulder, wrist)
-                print(f"calibrated: arm_length={arm.arm_length:.2f}")
-            elif arm.arm_length is None:
+                calibrating = True
+                arm.start_calibration()
+            if calibrating:
+                if arm.calibrate(shoulder, wrist, n_samples=CALIB_FRAMES):
+                    calibrating = False
+                    print(f"calibrated: arm_length={arm.arm_length:.3f} m")
+                continue
+            if arm.arm_length is None:   # hold off teleop until calibrated
                 continue
 
             thetalist, success = arm.step(shoulder, wrist)
-            print(f"success={success}  arm_length={arm.arm_length:.2f}  deg={np.degrees(thetalist).round(1)}")
+            if not success or frame % 15 == 0:   # throttle: heartbeat + every IK hold
+                print(f"success={success}  deg={np.degrees(thetalist).round(1)}")
             if success:
-                action = arm.to_action(thetalist)
-                follower.send_action(action)
+                follower.send_action(arm.to_action(thetalist))
         
     finally:
         try:
