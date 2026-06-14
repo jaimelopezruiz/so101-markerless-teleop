@@ -2,16 +2,21 @@
 Wires perception, bridge, and hardware into the live teleop loop.
 """
 import time
-import math
 import numpy as np
 from bridge import bridge
 from perception import video_mapping
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
 
-STARTUP_STEP_DEG = 5
+STARTUP_STEP_DEG = 5.0
 DT = 1/30
-MAX_RELATIVE_TARGET = 5.0
+# Per-joint cap on how far a single action may move from the present position.
+# Folding the arm is the largest reconfiguration (~44 deg of elbow travel), so a
+# small cap makes it creep over many frames and never complete during normal hand
+# motion. 20 deg lets it fold in ~2-3 frames while still bounding a runaway jump.
+# (Targets are already smoothed + workspace-clamped + success-gated upstream.)
+MAX_RELATIVE_TARGET = 10.0
+
 PORT = "COM3"       # find with lerobot's find_port utility
 ROBOT_ID = "jlo"    # must match the id set when calibrating arm
 
@@ -39,31 +44,37 @@ def ramp_to(target_pose: dict, step_deg: float = STARTUP_STEP_DEG,
         time.sleep(dt)
 
 def run() -> None:
-    arm = bridge.RobotArm(bridge.M, bridge.Blist, bridge.limits, bridge.THETALIST_REST, 0.5)     # alpha = 0.5, tweakable
-    
+    arm = bridge.RobotArm(bridge.M, bridge.Blist, bridge.limits, bridge.THETALIST_REST,
+                          min_cutoff=1.0, beta=1.5)     # one-euro smoothing, tweakable
+
     follower.connect(calibrate=False)
     try:
         ## STARTUP RAMP
-        ramp_to(arm.to_action(bridge.THETALIST_CALIB))
-        arm.theta_prev = bridge.THETALIST_CALIB.copy()
+        # Ramp to REST (the teleop neutral) and seed theta_prev from it, so the
+        # first step() has no jump: hand-at-neutral maps straight to this pose.
+        ramp_to(arm.to_action(bridge.THETALIST_REST))
+        arm.theta_prev = bridge.THETALIST_REST.copy()
         
         ## MAIN LOOP
         for shoulder, wrist, key in video_mapping.landmark_stream():
-            # Checks calibration initialisation, waits until scale is set
+            # Hold off teleop until the operator calibrates their arm length ('c').
             if key == ord('c'):
                 arm.calibrate(shoulder, wrist)
-                print(f"calibrated: scale={arm.scale:.2f}")
-            elif arm.scale is None:
+                print(f"calibrated: arm_length={arm.arm_length:.2f}")
+            elif arm.arm_length is None:
                 continue
 
             thetalist, success = arm.step(shoulder, wrist)
-            print(f"success={success}  scale={arm.scale}  deg={np.degrees(thetalist).round(1)}")
+            print(f"success={success}  arm_length={arm.arm_length:.2f}  deg={np.degrees(thetalist).round(1)}")
             if success:
                 action = arm.to_action(thetalist)
                 follower.send_action(action)
         
     finally:
-        ramp_to(arm.to_action(bridge.THETALIST_STOW))
+        try:
+            ramp_to(arm.to_action(bridge.THETALIST_STOW))
+        except ConnectionError:
+            print("Could not stow arm: connection lost.")
         follower.disconnect()
     
 
