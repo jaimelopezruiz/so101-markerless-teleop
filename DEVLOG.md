@@ -9,6 +9,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 > chronology. Day-by-day journaling resumes at the bridge layer (Entry 7+), where
 > design and writing happen together. Might make a cleaner reference doc once finished.
 
+> Planned future work includes adding perception of depth for the missing axis of movement and extending the current purely kinematic control to model the arm's dynamics (joint torques, inertia, and gravity compensation).
 ----
 
 ## Contents
