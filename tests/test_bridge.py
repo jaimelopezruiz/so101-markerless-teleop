@@ -5,17 +5,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from types import SimpleNamespace
 
-from bridge.bridge import RobotArm, WS_CENTER, WS_RMIN, MAP_RMAX, EXT_MIN_FRAC
+from bridge.bridge import RobotArm, WS_CENTER, WS_RMIN, MAP_RMAX, EXT_MIN_FRAC, THETALIST_PARK, THETALIST_NEUTRAL
 from kinematics.core import Adjoint, TransInv, FKinBody
 from urdf.parser import findMnS
-
-THETALIST_REST = np.radians([0, -37.7, 11.4, 19.2, 0])
 
 M, Slist, limits = findMnS()
 # Body-frame screw axes: Blist = [Ad_{M^-1}] Slist, column by column.
 Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[1])]).T
 
-robot_test = RobotArm(M, Blist, limits, THETALIST_REST)
+robot_test = RobotArm(M, Blist, limits, theta_park=THETALIST_PARK, theta_neutral=THETALIST_NEUTRAL)
 
 ARM = 0.7
 shoulder = SimpleNamespace(x=0.0, y=0.0)

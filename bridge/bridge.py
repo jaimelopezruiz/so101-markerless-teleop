@@ -16,11 +16,13 @@ Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(Slist.shape[
 # (JOINT_SIGN all +1, JOINT_OFFSET 0, verified with tests/joint_check.py), so
 # these are also the motor commands. Never sign-flip these to fix motor
 # behaviour -- a motor sign belongs only in JOINT_SIGN.
-# REST is the teleop neutral and the reference pose: it sets the startup ramp
-# target, the fixed gripper orientation R_fixed, the held y-coordinate, and the
-# null-space posture bias. Chosen central (EE ~(0.30, 0.30)).
-THETALIST_REST = np.radians([0, -37.7, 11.4, 19.2, 0])
-THETALIST_STOW = np.radians([0, -105, 96, 80, 0])    # Parked (shutdown ramp target)
+# NEUTRAL is the mapping reference: it sets the fixed gripper orientation
+# R_fixed, the held y-coordinate, and the null-space posture bias. Chosen
+# central (EE ~(0.30, 0.30)). PARK is the folded physical start pose (the
+# measured torque-off limp reading): it seeds theta_prev / prev_dir and is the
+# ramp target at both ends.
+THETALIST_NEUTRAL = np.radians([0, -37.7, 11.4, 19.2, 0])
+THETALIST_PARK = np.radians([0.57, -97.14, 96.53, 67.65, 1.63])    # folded start / seed / ramp target
 
 # --- lerobot joint-frame calibration --------------------------------------
 # lerobot accepts/reports each joint in TRUE degrees referenced to the motor's
@@ -64,18 +66,25 @@ NULLSPACE_GAIN = 0.3
 
 class RobotArm:
 
-    def __init__(self, M, Blist, limits, theta_prev, min_cutoff=1.0, beta=1.5, d_cutoff=1.0):
+    def __init__(self, M, Blist, limits, *, theta_park, theta_neutral, min_cutoff=1.0, beta=1.5, d_cutoff=1.0):
         self.M = M
         self.Blist = Blist
         self.limits = limits
-        T_rest_full = FKinBody(self.M, self.Blist, theta_prev)
+        # Mapping reference (held orientation + y) comes from NEUTRAL, not the
+        # PARK start pose -- keeps R_fixed / held-y decoupled from the seed.
+        T_rest_full = FKinBody(self.M, self.Blist, theta_neutral)
         self.T_rest = T_rest_full[:3, 3]
         self.R_fixed = T_rest_full[:3, :3]
-        self.theta_prev = theta_prev.copy()
-        self.theta_pref = theta_prev.copy()   # fixed preferred posture for null-space biasing
+        self.theta_prev = theta_park.copy()      # IK warm-start / hold-last seed (physical start pose)
+        self.theta_pref = theta_neutral.copy()   # fixed preferred posture for null-space biasing
         self.arm_length = None                # set by calibrate(); gates teleop until then
         self._calib_buf = []                  # arm-length samples accumulated during calibration
-        self.prev_dir = np.array([0.0, 1.0])  # last EE direction (fallback when hand near shoulder)
+        # Fallback EE direction when the hand is near the shoulder: unit vector
+        # from WS_CENTER to PARK's end-effector, so the first live target (before
+        # a hand direction is defined) lands on PARK.
+        p = FKinBody(M, Blist, theta_park)[:3, 3]
+        d = np.array([p[0], p[2]]) - WS_CENTER
+        self.prev_dir = d / np.linalg.norm(d)
         # One-euro filter state/params (see _smooth).
         self.min_cutoff = min_cutoff   # Hz: lower = more smoothing when the hand is still
         self.beta = beta               # responsiveness: higher = less lag when moving fast

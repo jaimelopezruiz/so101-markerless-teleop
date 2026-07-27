@@ -48,16 +48,16 @@ def ramp_to(target_pose: dict, step_deg: float = STARTUP_STEP_DEG,
         time.sleep(dt)
 
 def run() -> None:
-    arm = bridge.RobotArm(bridge.M, bridge.Blist, bridge.limits, bridge.THETALIST_REST,
-                          min_cutoff=1.0, beta=1.5)     # one-euro smoothing, tweakable
+    arm = bridge.RobotArm(bridge.M, bridge.Blist, bridge.limits, theta_park= bridge.THETALIST_PARK,
+                           theta_neutral=bridge.THETALIST_NEUTRAL, min_cutoff=1.0, beta=1.5)     # one-euro smoothing, tweakable
 
     follower.connect(calibrate=False)
     try:
         ## STARTUP RAMP
-        # Ramp to REST (the teleop neutral) and seed theta_prev from it, so the
-        # first step() has no jump: hand-at-neutral maps straight to this pose.
-        ramp_to(arm.to_action(bridge.THETALIST_REST))
-        arm.theta_prev = bridge.THETALIST_REST.copy()
+        # Ramp to PARK (the folded start pose the constructor already seeded into
+        # theta_prev), so the first step() has no jump: the arm rests limp at
+        # ~PARK and a folded hand maps straight back to it.
+        ramp_to(arm.to_action(bridge.THETALIST_PARK))
         
         ## MAIN LOOP
         calibrating = False
@@ -91,7 +91,7 @@ def run() -> None:
         
     finally:
         try:
-            ramp_to(arm.to_action(bridge.THETALIST_STOW))
+            ramp_to(arm.to_action(bridge.THETALIST_PARK))
         except ConnectionError:
             print("Could not stow arm: connection lost.")
         follower.disconnect()
