@@ -17,3 +17,5 @@ dist/
 # IDE / tooling
 .vscode/
 .claude/
+PLAN.md
+CLAUDE.md
