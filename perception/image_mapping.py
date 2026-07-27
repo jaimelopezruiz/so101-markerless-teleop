@@ -10,14 +10,10 @@ import sys
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks.python import vision
-from mediapipe.tasks.python import BaseOptions
 
-from perception.pose_detector import draw_landmarks_on_image
+from perception.pose_detector import PoseDetector, draw_landmarks_on_image
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = ROOT / "models" / "pose_landmarker_heavy.task"
 MEDIA_DIR = ROOT / "docs" / "media"
 
 # Input image: first CLI argument, or a default next to the repo root.
@@ -28,17 +24,16 @@ if not image_path.is_file():
         f"Pass one explicitly:  python -m perception.image_mapping <path-to-photo>"
     )
 
-# Create the PoseLandmarker (IMAGE mode).
-base_options = BaseOptions(model_asset_path=str(MODEL_PATH))
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options,
-    output_segmentation_masks=True)
-detector = vision.PoseLandmarker.create_from_options(options)
+# Load as RGB (cv2 reads BGR).
+bgr = cv2.imread(str(image_path))
+if bgr is None:
+    raise ValueError(f"Could not read image (unsupported format or corrupt file): {image_path}")
+rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 # Detect and annotate.
-image = mp.Image.create_from_file(str(image_path))
-detection_result = detector.detect(image)
-annotated_image, _ = draw_landmarks_on_image(image.numpy_view(), detection_result)
+detector = PoseDetector(mode="image")
+detection_result = detector.detect(rgb)
+annotated_image, _ = draw_landmarks_on_image(rgb, detection_result)
 annotated_bgr = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
 
 # Save the annotated image for the DEVLOG.
