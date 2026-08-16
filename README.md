@@ -47,10 +47,26 @@ pip install -e .                # makes kinematics/, urdf/, perception/, tests/ 
 
 The editable install (`pip install -e .`) puts the project on the path, so the
 imports resolve no matter where a script is run from. The registered packages
-are `kinematics`, `urdf`, `perception`, `bridge`, and `tests`.
+are `kinematics`, `urdf`, `perception`, `bridge`, `lerobot_teleoperator_markerless`,
+and `tests`. The install records a **static snapshot** of that list, so re-run
+`pip install -e .` whenever it changes in `pyproject.toml` — otherwise the new
+package resolves only when a script happens to run from the repo root.
 
 The MediaPipe model (`models/pose_landmarker_heavy.task`) is not tracked in
 git; download `pose_landmarker_heavy.task` from MediaPipe and place it there.
+
+### OpenCV GUI conflict (`cv2.imshow` fails)
+
+`lerobot` depends on `opencv-python-headless`; this repo (and mediapipe) need
+`opencv-contrib-python`. Both install into the same `cv2/` directory, so
+whichever pip writes last wins — and if that's headless, every `cv2.imshow`
+raises *"The function is not implemented. Rebuild the library with Windows,
+GTK+ 2.x or Cocoa support"*. Any `pip install` that touches lerobot can
+re-trigger it. Fix (version pinned to match lerobot's `<4.14` constraint):
+
+```sh
+pip install --force-reinstall --no-deps "opencv-contrib-python==4.13.0.92"
+```
 
 ## Running
 
