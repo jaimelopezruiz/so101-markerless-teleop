@@ -37,6 +37,11 @@ class PerceptionThread:
         self._error: Exception | None = None
         self._frame_id = 0
 
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
     # --- lifecycle ---------------------------------------------------------
     def start(self) -> None:
         self._stop.clear()

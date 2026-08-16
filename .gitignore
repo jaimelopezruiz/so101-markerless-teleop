@@ -19,3 +19,6 @@ dist/
 .claude/
 PLAN.md
 CLAUDE.md
+
+# lerobot-find-cameras output
+outputs/

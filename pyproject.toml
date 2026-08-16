@@ -3,7 +3,12 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "so101-markerless-teleop"
+# NOTE: the distribution name is deliberately the plugin package name, not the
+# project name. lerobot's register_third_party_plugins() scans installed
+# DISTRIBUTIONS for a `lerobot_teleoperator_` prefix and imports the module of
+# that exact name, which is what makes `--teleop.type=markerless` resolve in the
+# stock lerobot-record CLI. Underscores matter (the prefix check uses them).
+name = "lerobot_teleoperator_markerless"
 version = "0.1.0"
 description = "Markerless teleoperation of the SO-101 arm from monocular pose estimation."
 requires-python = ">=3.10"
@@ -17,4 +22,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["kinematics", "urdf", "perception", "tests", "bridge"]
+packages = ["kinematics", "urdf", "perception", "tests", "bridge", "lerobot_teleoperator_markerless"]

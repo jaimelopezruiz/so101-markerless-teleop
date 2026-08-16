@@ -85,6 +85,9 @@ class RobotArm:
         p = FKinBody(M, Blist, theta_park)[:3, 3]
         d = np.array([p[0], p[2]]) - WS_CENTER
         self.prev_dir = d / np.linalg.norm(d)
+        # PARK's (x, z) in task space -- the ready-pose gate's reference point
+        # (C4): teleop arms only once the live mapped target is back near here.
+        self.park_xz = np.array([p[0], p[2]])
         # One-euro filter state/params (see _smooth).
         self.min_cutoff = min_cutoff   # Hz: lower = more smoothing when the hand is still
         self.beta = beta               # responsiveness: higher = less lag when moving fast
@@ -145,9 +148,19 @@ class RobotArm:
             return True
         return False
 
-    def step(self, shoulder: object, wrist: object):
-        """Smooths the shoulder->wrist vector, maps arm extension->reach radius and
-        hand direction->EE angle, builds T_sd, solves IK, returns (thetalist, success)."""
+    @staticmethod
+    def polar(xz) -> tuple[float, float]:
+        """(reach m, angle deg) of a task-space (x, z) point about WS_CENTER --
+        the two quantities the radial mapping is actually built from, and the
+        useful way to report how far a target is from a reference pose."""
+        d = np.asarray(xz, dtype=float) - WS_CENTER
+        return float(np.linalg.norm(d)), float(np.degrees(np.arctan2(d[1], d[0])))
+
+    def map_target(self, shoulder: object, wrist: object) -> tuple[float, float]:
+        """Smooths the shoulder->wrist vector and maps arm extension->reach radius,
+        hand direction->EE angle. Returns the task-space target (x, z). One call
+        per frame -- the one-euro filter must see true camera cadence, not the
+        (slower, gated) rate solve() gets called at."""
 
         # Smoothed relative vector (one-euro).
         rel = self._smooth(np.array([wrist.x - shoulder.x, wrist.y - shoulder.y]))
@@ -168,11 +181,16 @@ class RobotArm:
         if n > 1e-6:
             self.prev_dir = direction / n
         robot_x, robot_z = WS_CENTER + radius * self.prev_dir
+        return float(robot_x), float(robot_z)
 
-        # Forming 4x4 matrix for that position and (for now) fixed orientation
+    def solve(self, x: float, z: float):
+        """Builds T_sd from the task-space target (x, z) plus the fixed
+        orientation/held-y, solves IK, advances theta_prev on success. Returns
+        (thetalist, success)."""
+
         T_sd = np.eye(4)
         T_sd[:3, :3] = self.R_fixed
-        T_sd[:3, 3] = np.array([robot_x, self.T_rest[1], robot_z])
+        T_sd[:3, 3] = np.array([x, self.T_rest[1], z])
 
         # Calling IK function -> (thetalist, success)
         # position_only=True for now: locking orientation to a single R_fixed
@@ -185,6 +203,12 @@ class RobotArm:
         if IK_result[1] is True:
             self.theta_prev = IK_result[0]     # advance ONLY on success — keeps the redundant joints pinned
         return IK_result
+
+    def step(self, shoulder: object, wrist: object):
+        """map_target + solve in one call. Kept for callers (main.py, the offline
+        tests) that don't need C4's per-tick ready-pose gate."""
+        x, z = self.map_target(shoulder, wrist)
+        return self.solve(x, z)
 
     @staticmethod
     def to_action(theta_urdf: np.ndarray) -> dict[str, float]:
