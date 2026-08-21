@@ -56,8 +56,10 @@ WS_RMIN = 0.165                      # tightest fold (physical min reach)
 # folded robot required reaching the hand ~50 cm across the torso (anatomically
 # impossible), so deep folds were never commandable.
 # Extension fraction over [EXT_MIN_FRAC, 1] -> reach radius over [WS_RMIN, MAP_RMAX].
-EXT_MIN_FRAC = 0.15   # arm this fraction extended -> fully folded robot (WS_RMIN)
-MAP_RMAX = 0.40       # radius at full extension; inside the true max so edges stay reachable
+EXT_MIN_FRAC = 0.2   # arm this fraction extended -> fully folded robot (WS_RMIN)
+MAP_RMAX = 0.32       # radius at full extension; inside the true max so edges stay reachable
+EXT_BREAK_FRAC = 0.40      # input fraction (post-floor) where the gentle segment ends
+RADIUS_BREAK_FRAC = 0.30   # output fraction reached at that breakpoint
 
 # Null-space posture bias: how hard IK pulls the redundant joints toward the
 # rest posture each iteration. Keeps the elbow from folding into awkward poses
@@ -169,8 +171,9 @@ class RobotArm:
         # [EXT_MIN_FRAC, 1] maps linearly onto [WS_RMIN, MAP_RMAX].
         ext_frac = np.clip(
             (np.linalg.norm(rel) / self.arm_length - EXT_MIN_FRAC) / (1.0 - EXT_MIN_FRAC),
-            0.0, 1.0,
-        )
+            0.0, 1.0,)
+
+        ext_frac = np.interp(ext_frac, [0.0, EXT_BREAK_FRAC, 1.0], [0.0, RADIUS_BREAK_FRAC, 1.0])
         radius = WS_RMIN + ext_frac * (MAP_RMAX - WS_RMIN)
 
         # Hand direction -> EE direction in robot x-z (+x fwd, +z up). MediaPipe y

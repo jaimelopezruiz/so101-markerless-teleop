@@ -24,5 +24,5 @@ class MarkerlessTeleopConfig(TeleoperatorConfig):
     # Ready-pose gate: teleop stays parked until the mapped target sits within
     # gate_eps metres of PARK's end-effector (x, z) for gate_n_frames
     # CONSECUTIVE frames. Kills the startup task-space lunge ("Jerk B").
-    gate_eps: float = 0.025      # m; PLAN suggests 2-3 cm
+    gate_eps: float = 0.035      # m; PLAN suggests 2-3 cm
     gate_n_frames: int = 8       # PLAN suggests 5-10
