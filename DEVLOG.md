@@ -127,7 +127,7 @@ The other three are hardware diagnostics, run with the arm connected.
 
 ### Scope and constraints (v1)
 
-- 2D first: target the end-effector position in the (x, y) plane of the robot base; z held constant.
+- 2D first: target the end-effector position in the (x, z) plane of the robot base (`+x` forward, `+z` up); `y`, the depth axis, held constant.
 - Fixed orientation: gripper orientation locked to a sensible constant pose, not tracked from the user.
 - Single webcam: monocular depth limitations accepted; stereo extension deferred.
 - Position-only target: orientation tracking and finger/gripper control deferred to later phases.

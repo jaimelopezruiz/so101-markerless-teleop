@@ -26,3 +26,7 @@ outputs/
 # Single-use bit-exact IK baseline (tests/test_ik.py --capture/--check).
 # Gates one refactor commit; not meant to outlive it.
 .ik_baseline.npz
+
+# Regenerable figures from `python -m tests.test_ik --plots`. docs/media/ proper
+# is curated for README/DEVLOG; this subdir is re-emittable output.
+docs/media/tests/

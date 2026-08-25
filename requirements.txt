@@ -3,4 +3,4 @@ matplotlib
 mediapipe
 opencv-contrib-python
 yourdfpy
-lerobot[feetech]
+lerobot[feetech]==0.5.1

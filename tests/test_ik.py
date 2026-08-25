@@ -70,7 +70,10 @@ ENTRY6 = {
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = REPO_ROOT / ".ik_baseline.npz"
-MEDIA_DIR = REPO_ROOT / "docs" / "media"
+# Regenerable test output, kept out of docs/media/ proper: that directory is
+# curated for README/DEVLOG, and mixing it with figures anyone can re-emit via
+# --plots means git status noise on every run. Gitignored.
+MEDIA_DIR = REPO_ROOT / "docs" / "media" / "tests"
 
 
 def round_trip(joint_limits, iters, noise, *, seed, eomg=SOLVER_EOMG, ev=SOLVER_EV):
