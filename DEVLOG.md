@@ -23,7 +23,7 @@ Development log for markerless teleoperation project using LeRobot's SO-101 arm.
 - [Entry 7: Bridge Layer (Perception → IK)](#entry-7---bridge-layer-perception--ik)
 - [Entry 8: Video Loop Integration](#entry-8---video-loop-integration)
 - [Entry 9: Hardware Bring-up](#entry-9---hardware-bring-up)
-- [Entry 9: Hardware Bring-up (working log)](#entry-9---hardware-bring-up-working-log)
+- [Entry 10: LeRobot Record Integration](#entry-10---lerobot-record-integration)
 
 ----
 
@@ -59,7 +59,7 @@ It also serves as a learning exercise in robotics fundamentals: kinematics, IK, 
 flowchart LR
     A[Webcam] --> B[MediaPipe Pose]
     B --> C[Landmark extraction<br/>shoulder, wrist]
-    C --> D[Frame transform<br/>+ scaling]
+    C --> D[One-euro smoothing<br/>+ radial mapping]
     D --> E[Construct T_sd]
     E --> F[IK solver<br/>DLS + Newton-Raphson]
     F --> G[Joint angles θ]
@@ -70,8 +70,16 @@ flowchart LR
 The dotted feedback edge is the warm start: the iterative IK solver needs an initial
 guess, so each frame seeds the solve with the previous frame's solution. This is
 faster (the target moves little between frames) and keeps the joint trajectory
-smooth over time. It is enabled by the solver's `thetalist0` argument and will be
-driven by the bridge layer (Entry 7+).
+smooth over time. It is enabled by the solver's `thetalist0` argument and driven by
+the bridge layer (`RobotArm.solve`), where `theta_prev` advances only on IK success,
+so a failed or low-visibility frame holds the last good pose.
+
+Two orchestrators sit on top of this core, and everything below them is free of
+lerobot. `main.py` owns its own camera loop, the calibration keypress and the
+startup/stow ramps, and drives the arm directly. `MarkerlessTeleop` exposes the same
+core as a lerobot `Teleoperator` plugin, so `lerobot-record` calls `get_action()` at
+record fps and owns the hardware itself; perception then runs on its own thread
+(`PerceptionThread`) rather than in the orchestrator's loop.
 
 ### Repo structure
 
@@ -79,8 +87,9 @@ driven by the bridge layer (Entry 7+).
 so101-markerless-teleop/
 ├── README.md            # layout, setup, how to run
 ├── DEVLOG.md            # this file
-├── pyproject.toml       # editable-install packaging (kinematics, urdf, perception, tests)
-├── requirements.txt     # numpy, matplotlib, mediapipe, opencv-python, yourdfpy
+├── main.py              # standalone orchestrator: camera loop, calibration key, ramps
+├── pyproject.toml       # editable install; distribution name IS the lerobot plugin name
+├── requirements.txt     # numpy, matplotlib, mediapipe, opencv-contrib-python, yourdfpy, lerobot
 ├── .gitignore
 ├── kinematics/
 │   ├── core.py          # trimmed Modern Robotics lib, 18 functions (was 40+)
@@ -89,17 +98,32 @@ so101-markerless-teleop/
 │   ├── parser.py        # findMnS + rpyToRot (path-safe, no module globals)
 │   └── so101_new_calib.urdf
 ├── perception/
-│   ├── pose_detector.py # draw_landmarks_on_image
-│   ├── image_mapping.py # still-image demo
-│   └── video_mapping.py # webcam demo
+│   ├── pose_detector.py     # PoseDetector + draw_landmarks_on_image, sole MediaPipe home
+│   ├── perception_thread.py # background publisher, latest Snapshot, no cv2 GUI
+│   ├── image_mapping.py     # still-image demo
+│   └── video_mapping.py     # webcam demo, landmark_stream generator
+├── bridge/
+│   └── bridge.py        # RobotArm: smoothing, radial mapping, T_sd, IK call, to_action
+├── lerobot_teleoperator_markerless/
+│   ├── config.py        # MarkerlessTeleopConfig, registers --teleop.type=markerless
+│   └── markerless.py    # MarkerlessTeleop, the lerobot Teleoperator plugin
+├── docs/
+│   └── media/           # gifs and figures used by README and this log
 ├── models/
 │   └── pose_landmarker_heavy.task   # 30 MB, git-ignored
 └── tests/
     ├── robot.py         # shared M, Slist, Blist, limits fixtures
     ├── test_fk.py       # verify_fk + driver
     ├── test_jacobian.py # verify_jac + driver
-    └── test_ik.py       # round_trip, verify_singular, noise_sweep + driver
+    ├── test_ik.py       # round_trip, verify_singular, noise_sweep + driver
+    ├── test_bridge.py   # calibration + radial mapping, no camera or hardware
+    ├── teleop_live.py   # hardware: get_action -> send_action with gate overlay
+    ├── joint_check.py   # hardware: per-joint sign/offset verification
+    └── lerobot_tests.py # hardware: raw observation stream
 ```
+
+`test_fk`, `test_jacobian`, `test_ik` and `test_bridge` need no camera or robot.
+The other three are hardware diagnostics, run with the arm connected.
 
 ### Scope and constraints (v1)
 
@@ -117,8 +141,10 @@ so101-markerless-teleop/
 | Jacobians (space & body) | Working | Numerical differentiation |
 | IK (DLS, body frame) | Working | Round-trip, convergence radius, unreachable, singularity tests |
 | Pose tracker | Working | Live webcam, returns world landmarks |
-| Bridge layer (perception to IK input) | Next | n/a |
-| Hardware execution | Pending | n/a |
+| Perception thread (background publisher) | Working | Demo loop, producer vs consumer rates |
+| Bridge layer (perception to IK input) | Working | `tests/test_bridge.py`, live teleop |
+| Hardware execution | Working | `main.py` and `tests/teleop_live.py` on the arm |
+| lerobot Teleoperator plugin | Working | Recorded dataset reloaded via `LeRobotDataset`, one episode replayed |
 
 ----
 
@@ -330,6 +356,10 @@ Default driver output (round-trip, noise = 1 rad, 100 trials; stochastic, no fix
 round-trip success (noise=1): 0.90
 ```
 
+**Update (before the velocity-IK refactor).** Both problems were in the test, not the solver. The pass gate had drifted out of sync: `bb65ea1` loosened the solver default from `ev=1e-3` to `5e-3` and left `round_trip` checking against `1e-3`, so the test scored the solver against a tolerance five times tighter than the one it was handed. At noise = 1 rad, 44.6% of converged solves land in `[1e-3, 5e-3)` and only 1.6% genuinely miss. That accounts for the whole gap between the 95.0% in the table above and the ~52% the driver was reporting by the time I came back to it. The gate now reuses whatever `eomg`/`ev` go to the solver, the sweep reproduces the table, and the in-loop clamping decision stands unchanged.
+
+The test was also unseeded, wandering 0.43-0.53 across four runs of untouched code, which makes it worthless as an oracle for a refactor. It now seeds `default_rng` per noise level and asserts a floor at each, and `--capture`/`--check` compares the solved angles bit-for-bit against a saved baseline. The bit-exact comparison is the part that matters: swapping `Jt.T @ inv(A)` for the algebraically identical `solve(A, Jt).T` leaves every success rate passing but moves solutions by up to 5.6 rad, because a 1e-15 rounding difference in the pseudo-inverse iterates into a different basin. Since `theta_prev` is both the warm-start seed and the hold-last pose, a different solution means the arm holds a different posture.
+
 ### Open questions
 - Tune `λ`, `eomg`, and `ev` against the real control loop's rate and noise once hardware is connected.
 - Add an explicit reachability/limit pre-check so unreachable teleop targets are reported, rather than silently clamped to the nearest feasible pose.
@@ -500,3 +530,64 @@ I confirmed the following on the physical arm: the URDF-to-lerobot frame is iden
 - **Orientation tracking.** Position-only floats the gripper orientation. Mapping my forearm and wrist to `wrist_flex`/`wrist_roll` (and dropping the `R_fixed` float) is the next fidelity step.
 - **Depth.** The depth axis is still dropped (MediaPipe z → robot y held fixed). Stereo or learned depth would unlock the third dimension.
 - **One-euro tuning.** `min_cutoff`/`beta` sit at sane defaults; they want a proper sweep against the live loop.
+
+----
+
+## Entry 10 - LeRobot Record Integration
+
+### Goal
+Record datasets through `lerobot-record` before spending any more time on motion quality. The point was to prove the whole data path end to end (teleop into record into a versioned `LeRobotDataset` that reloads and replays) rather than polish a pipeline that might not survive contact with the recording API. It went first because it is the only piece of this phase gated on an external, fast-moving library, and the one that kills the data-collection sprint if it slips.
+
+### Registering as a third-party teleoperator
+I expected to write a custom record script and ended up not needing one. lerobot's `register_third_party_plugins()` scans installed **distribution** names for a `lerobot_teleoperator_` prefix and imports the module of that exact name, so the whole hookup is a naming exercise. `[project] name` in `pyproject.toml` is now `lerobot_teleoperator_markerless`, which looks absurd for a project this size but is the thing that makes `--teleop.type=markerless` resolve in the stock CLI. Underscores have to survive into the metadata, and they do.
+
+The rest falls out by convention. `@TeleoperatorConfig.register_subclass("markerless")` on the config class registers the type string, then construction falls through to `make_device_from_device_class()`, which finds the class by name (`MarkerlessTeleopConfig` gives `MarkerlessTeleop`) via the package `__init__.py` re-export. Keep that export or the lookup fails.
+
+None of this is documented, which is the argument for pinning: `lerobot[feetech]==0.5.1` is the version this was actually proven against, and a convention that is not in the docs is a convention nobody promised to keep.
+
+### Two startup jerks
+The interesting part of this entry. A leader-follower rig never has a startup jerk because the leader reads its present position every frame, so the first command is wherever the leader already is. A camera has no such luxury, and it turns out there are two separate jerks hiding behind that, in two different spaces. I only made progress once I stopped treating them as one problem.
+
+**Jerk A is in joint space:** the pose seeding `theta_prev` versus where the arm physically is at power-on. I killed it by making `THETALIST_PARK` the *measured torque-off limp reading*, `[0.57, -97.14, 96.53, 67.65, 1.63]` deg. On position-controlled servos only a low folded pose is a gravity equilibrium, so a powered-on arm is already sitting at the pose tick 0 commands. That is why the record CLI needs no startup ramp at all, while `main.py` still ramps.
+
+That forced splitting the old single `THETALIST_REST` in two, because the seed pose and the mapping reference had been the same constant doing two unrelated jobs. `THETALIST_NEUTRAL` stays central and remains the mapping reference: it sets `R_fixed`, the held `y`, and the null-space `theta_pref`. `THETALIST_PARK` is the physical start pose and seeds `theta_prev` and `prev_dir`. `RobotArm` now takes both as keyword-only arguments, which keeps it dependency-injected (so `test_bridge` stays hardware-free) and stops two same-typed pose vectors being swapped positionally, which is a bug I would never have found by reading.
+
+**Jerk B is in task space:** the robot's starting end-effector versus wherever my hand happens to be mapping when teleop starts. This is the one the leader-follower setup punts on by snapping the follower to the leader, and it is worse here because the arm can be a full reach away. The fix is a ready-pose gate: hold `PARK` and refuse to drive until the mapped `(x, z)` sits within `gate_eps` of `FK(PARK)`'s end-effector for `gate_n_frames` consecutive frames.
+
+The gate matches in **task space, not on "is the arm folded"**, and the difference matters. Fully folded maps to `r = 0.165 m` but `PARK` sits at `r = 0.206 m`, so a folded check would still hand over with a 4 cm jump. Matching the mapped target means the IK, seeded at `PARK`, returns approximately `PARK`, so the handover is a no-op. It also stays correct if I ever re-measure `PARK`, which a hardcoded posture check would not. `gate_eps = 0.025` and `gate_n_frames = 8` were right first try.
+
+One practical thing: under `lerobot-record` there is no window of mine on screen, so hunting a 2.5 cm target is blind. A bare distance says how far but not which way, so the gate prints the two knobs I actually control, arm extension and hand direction, with the direction to move each.
+
+### Perception on its own thread
+`get_action()` is called by the record loop at record fps and has to return promptly, so MediaPipe inference cannot sit in that path. `PerceptionThread` runs capture, detect and publish on a background thread and hands the consumer the latest result through a single-reference slot. Reading one immutable `Snapshot` is atomic under the GIL, so a consumer never sees a half-written one, and there is no lock to contend.
+
+Deliberately **no cv2 GUI in the thread**. `imshow` and `waitKey` are main-thread affine and flaky off-thread on Windows, so the thread publishes an `annotated_frame` and whoever owns the main thread displays it. A raising thread dies silently, so exceptions are stashed on `.error` for the consumer to notice instead of the loop just going quiet. I extracted `PoseDetector` first so the thread and `video_mapping` are both thin clients of one MediaPipe home rather than two copies drifting apart.
+
+The subtle rule is the sampling one, and it bit before I wrote it down. `map_target` runs on every valid new frame whether or not the gate has armed, because the one-euro filter derives its `dt` from wall-clock between calls and so has to see true camera cadence. For the same reason `get_action()` must skip **stale** frames, spotted by an unchanged `frame_id`: record fps and camera fps are different numbers, and sampling the filter at the wrong one corrupts the speed estimate and therefore the adaptive cutoff. Skipping it while unarmed, or calling it twice in a tick, both break it in the same way.
+
+`camera_index` on the constructor and a capture `timestamp` on the snapshot are the two cheap hooks for a second camera later. Two instances plus a combiner that pairs snapshots by timestamp, no triangulation, and none of it built now.
+
+### Remapping extension to radius
+Rehearsing a recording showed the extension mapping was not good enough to produce data worth keeping, so it got fixed before recording rather than after. The original map was linear from `EXT_MIN_FRAC = 0.15` to `MAP_RMAX = 0.40` with one constant gain end to end, and that gain was wrong at both ends. Close-in reaching, table height for instance, needed my wrist uncomfortably folded (within 15% of `arm_length` of my shoulder to hit `WS_RMIN`), while ordinary motion pushed the robot close enough to its true maximum reach of about 0.447 m that IK went visibly jerky near the ill-conditioned Jacobian.
+
+My first fix was a global `ext_frac**k` power curve, and it over-corrected in an instructive way. It concentrates resolution at full fold, but the precision I actually want is centred near `PARK`'s own radius of about 0.206 m, not at the extreme. It pushed the raw arm extension needed to reach `PARK` from roughly 30% to 61%, and floored the gate distance around 4 cm, which is outside the 2.5 cm `gate_eps`, so the gate stopped arming at all. `PARK`'s radius is a fixed hardware constant, it is just `FK(THETALIST_PARK)`, so any curve that concentrates resolution below where `PARK` sits can only ever make `PARK` harder to reach. That is worth remembering before reshaping this again.
+
+What landed is two-segment piecewise-linear through `np.interp`, with `EXT_BREAK_FRAC = 0.40` and `RADIUS_BREAK_FRAC = 0.30`: a gentle 0.75 slope from the floor through the fold-to-table-reach band where I actually work, and a steep segment past it for the rare full-stretch gesture. `EXT_MIN_FRAC` went up to 0.2 as a genuine comfort floor. `PARK` now needs about 48% raw extension, worse than the original 30% but comfortably inside the gentle segment, and the working band has roughly 47% less gain than before. `gate_eps` went to 0.035 to match the reshaped map. `tests/test_bridge.py` stayed green through all of it because it imports `MAP_RMAX` and `EXT_MIN_FRAC` live instead of hardcoding expected radii, which is the only reason retuning constants was cheap.
+
+### Housekeeping
+- `lerobot` depends on `opencv-python-headless` while this repo needs `opencv-contrib-python`, and they share one `cv2/` directory. Any pip run that touches lerobot can silently strip GUI support, and `cv2.imshow` then raises "The function is not implemented". Fix is `pip install --force-reinstall --no-deps "opencv-contrib-python==4.13.0.92"`.
+- Editable installs record a **static** snapshot of the packages list, so adding a package to `pyproject.toml` leaves it unresolvable outside the repo root until `pip install -e .` is re-run. This cost me time twice before I wrote it down.
+- Right arm only, landmarks 12 and 16. Calibrating with the left arm silently measures the *resting* right arm and quietly corrupts `arm_length`, with no error anywhere. The prompt now says which arm.
+- `send_feedback` raises `NotImplementedError` rather than no-oping, so it fails loudly if the record loop ever starts calling it. It does not.
+- `PerceptionThread.start()` returns before the camera and MediaPipe finish initialising, so the calibration prompt can print before the camera light comes on. That is thread scheduling, not a race worth fixing.
+
+### Verification
+Recorded `JaimeLR/markerless_c6`, 5 episodes and 2995 frames, and checked it against the acceptance criteria rather than eyeballing it. It reloads through `LeRobotDataset`; timestamps are uniform at 1/30 s with standard deviation 0.0 in every episode; `observation.images.scene` is present and genuinely decodes (I checked for non-trivial pixel values rather than trusting that a stream exists, since a black frame would also "be present"). Actions show continuous discontinuity-free motion in `shoulder_lift`, `elbow_flex` and `wrist_flex`. Episode 1 replayed through `lerobot-replay` without incident.
+
+Two things in that dataset look wrong and are not. `shoulder_pan` and `wrist_roll` sit near-flat and `gripper.pos` is exactly 0 throughout, both expected: the radial mapping never drives pan or roll, and there is no gripper channel yet. Episode 0 also holds flat at `PARK` for about 17.6 s before the gate arms, because `configure()` re-arms once per `connect()` rather than once per episode. Episodes 1 to 4 are live from frame 1.
+
+### Open questions
+- **Gate arming is per connect, not per episode.** Episode 0 carries a long parked prefix as a result. Re-arming per episode would cost a re-pose at every episode start, so this is a trade rather than a bug, but it should be a decision rather than an accident.
+- **Fixed-rate control and velocity-level IK.** The commanded position only changes when perception delivers, at roughly 15 to 25 Hz and irregularly, so the action stream is hold, hold, step, hold. Pacing the loop does not fix that; integrating toward the latest target every tick does. That is the next piece of work.
+- **Gripper channel.** Needed before any manipulation demo, and it is the one obviously empty column in the recorded data.
+- **Depth.** Still the missing axis, and still the largest single fidelity gain available.
