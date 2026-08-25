@@ -22,3 +22,7 @@ CLAUDE.md
 
 # lerobot-find-cameras output
 outputs/
+
+# Single-use bit-exact IK baseline (tests/test_ik.py --capture/--check).
+# Gates one refactor commit; not meant to outlive it.
+.ik_baseline.npz

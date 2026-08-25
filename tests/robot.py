@@ -17,5 +17,3 @@ reach = M[:3, 3] - T[:3, 3]
 
 THETALIST_REST = np.array([0, -1.3, 0, 0, 0])
 REACH_XYZ = FKinBody(M, Blist, THETALIST_REST)[:3, 3] - reach
-
-print(REACH_XYZ)
