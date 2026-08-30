@@ -21,6 +21,21 @@ class MarkerlessTeleop(Teleoperator):
         self._last_xz = None       # most recent mapped target, for debug/overlay only
         self._last_gate_print = 0.0   # throttle for the gate's terminal feedback
 
+        # --- control-rate telemetry ---------------------------------------
+        # The gap between get_action() calls is the true control period, and it
+        # is not the camera period: the record loop paces itself at its own fps
+        # while perception runs free. Measuring it here is what the velocity
+        # controller will integrate against, and logging the distribution is how
+        # dt_max_factor gets checked against real jitter instead of assumed.
+        self._dt = None            # seconds since the previous tick; None on tick 0
+        self._last_tick = None
+        self._dt_max = config.dt_max_factor / config.nominal_fps
+        self._tel_t0 = None        # telemetry window start
+        self._tel_ticks = 0        # get_action calls this window
+        self._tel_frames = 0       # NEW perception frames consumed this window
+        self._tel_dts = []         # measured dt samples this window
+        self._tel_over = 0         # ticks whose dt exceeded _dt_max
+
     @property 
     def feedback_features(self) -> dict[str, type]:      # Nothing while we don't have channels back to operator (haptics, force...)
         return {}
@@ -39,18 +54,31 @@ class MarkerlessTeleop(Teleoperator):
         self._last_frame_id = -1
         self._armed = False
         self._ready_count = 0
+        self._dt = None
+        self._last_tick = None
+        self._tel_t0 = None
+        self._tel_ticks = self._tel_frames = self._tel_over = 0
+        self._tel_dts = []
 
     def get_action(self) -> dict[str, float]:
         """One tick. Maps + solves only on a NEW, trustworthy frame; every other
         path falls through to hold-last (theta_prev is already the last good
         pose, since solve() advances it only on IK success)."""
+        now = time.perf_counter()
+        # Measured control period. None on the first tick, and long whenever the
+        # caller stalled; the velocity controller must treat both as
+        # discontinuities rather than integrate across them.
+        self._dt = None if self._last_tick is None else now - self._last_tick
+        self._last_tick = now
+
         if self.perception.error is not None:
             raise self.perception.error
         snap = self.perception.latest()
-        if (snap is not None
-                and snap.frame_id != self._last_frame_id          # stale repeat -> hold
-                and snap.visibility is not None                   # no person -> hold
-                and snap.visibility >= self.config.vis_thresh):   # low confidence -> hold
+        fresh = (snap is not None
+                 and snap.frame_id != self._last_frame_id         # stale repeat -> hold
+                 and snap.visibility is not None                  # no person -> hold
+                 and snap.visibility >= self.config.vis_thresh)   # low confidence -> hold
+        if fresh:
             self._last_frame_id = snap.frame_id
             # Map EVERY valid frame, armed or not: the one-euro filter inside
             # map_target must stay sampled at true camera cadence.
@@ -60,7 +88,43 @@ class MarkerlessTeleop(Teleoperator):
                 self.arm.solve(x, z)     # advances arm.theta_prev on IK success
             else:
                 self._gate(x, z)
+
+        self._telemetry(now, fresh)
         return self.arm.to_action(self.arm.theta_prev)
+
+    def _telemetry(self, now: float, fresh: bool) -> None:
+        """Throttled control-rate line: how often lerobot calls us, how many of
+        those ticks carried a NEW perception frame, and the measured dt spread.
+
+        The gap between those first two numbers is the whole reason the staleness
+        guard exists, and `over` counts ticks past dt_max_factor x nominal, so the
+        skip threshold can be set against observed jitter rather than guessed.
+        """
+        if self.config.log_every_s <= 0:
+            return
+        if self._tel_t0 is None:
+            self._tel_t0 = now
+
+        self._tel_ticks += 1
+        self._tel_frames += int(fresh)
+        if self._dt is not None:
+            self._tel_dts.append(self._dt)
+            if self._dt > self._dt_max:
+                self._tel_over += 1
+
+        window = now - self._tel_t0
+        if window < self.config.log_every_s or not self._tel_dts:
+            return
+
+        dts = np.array(self._tel_dts) * 1e3      # ms
+        print(f"[rate] ctrl {self._tel_ticks / window:5.1f} Hz | "
+              f"frames {self._tel_frames / window:5.1f} Hz | "
+              f"dt {np.median(dts):5.1f} ms med "
+              f"({dts.min():.1f}-{dts.max():.1f}) | "
+              f"over {self._dt_max * 1e3:.0f} ms: {self._tel_over}")
+        self._tel_t0 = now
+        self._tel_ticks = self._tel_frames = self._tel_over = 0
+        self._tel_dts = []
 
     def _gate(self, x: float, z: float) -> None:
         """Ready-pose gate. Arms teleop once the mapped target has sat within

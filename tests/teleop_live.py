@@ -23,7 +23,7 @@ PORT = "COM3"                 # find with lerobot's find_port utility
 ROBOT_ID = "jlo"              # must match the id set when calibrating the arm
 CAMERA_INDEX = 0
 MAX_RELATIVE_TARGET = 10.0    # float! an int raises TypeError inside lerobot
-DT = 1 / 30                   # control tick (T2 will formalise this)
+DT = 1 / 30                   # control tick; must match MarkerlessTeleopConfig.nominal_fps
 STARTUP_STEP_DEG = 5.0
 
 
@@ -100,13 +100,20 @@ def run() -> None:
         print("ready -- bring your hand to the ready pose to arm ('q' to quit)")
 
         while True:
+            loop_t0 = time.perf_counter()
             follower.send_action(teleop.get_action())
             snap = teleop.perception.latest()
             if snap is not None and snap.annotated_frame is not None:
                 cv2.imshow("teleop_live", _overlay(teleop, snap))
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
-            time.sleep(DT)
+            # Subtract the work already done this tick, the way lerobot's record
+            # loop paces itself. A bare sleep(DT) made the true period
+            # DT + get_action + send_action + imshow + waitKey, so this harness
+            # ran slow and its rate drifted with however long a frame took to
+            # draw. That is fine for a hold-last controller and not fine for one
+            # that integrates against dt.
+            time.sleep(max(0.0, DT - (time.perf_counter() - loop_t0)))
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
